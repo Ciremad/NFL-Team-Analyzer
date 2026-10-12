@@ -193,65 +193,44 @@ tab_matchup, tab_offense, tab_defense, tab_players, tab_betting, tab_dashboard =
 # ------------------------------------------------------------
 with tab_matchup:
     st.markdown('<div class="panel-title">Head-to-head matchup</div>', unsafe_allow_html=True)
-    st.caption("Grades compare each offense and opposing defense with the league average. Green = favorable, yellow = near average/mixed, red = difficult.")
     c1, c2 = st.columns(2)
     with c1:
-        team_a = st.selectbox("First team's offense", TEAM_CODES, index=TEAM_CODES.index("CHI"),
+        team_a = st.selectbox("Team A offense", TEAM_CODES, index=TEAM_CODES.index("CHI"),
                               format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="match_a")
     with c2:
-        team_b = st.selectbox("Opponent's defense", TEAM_CODES, index=TEAM_CODES.index("GB"),
+        default_b = TEAM_CODES.index("GB")
+        team_b = st.selectbox("Team B defense", TEAM_CODES, index=default_b,
                               format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="match_b")
-
     if team_a == team_b:
-        st.warning("Choose two different teams to compare.")
+        st.warning("Choose two different teams for a matchup.")
     else:
-        def team_metric_grade(offense_value, defense_allowed, league_average):
-            values = [offense_value, defense_allowed, league_average]
-            if any(pd.isna(v) for v in values) or league_average <= 0:
-                return np.nan
-            projected = (offense_value + defense_allowed) / 2
-            # A more forgiving scale: league average = 5; 25% above average = 7.5.
-            return float(np.clip(5 + 10 * ((projected / league_average) - 1), 1, 10))
+        a = team_summary(team_a)
+        b = team_summary(team_b)
+        c = team_summary(team_b)
+        d = team_summary(team_a)
 
-        def matchup_label(score):
-            if pd.isna(score):
-                return "N/A"
-            if score >= 8:
-                return "🟢 Favorable"
-            if score >= 5:
-                return "🟡 Average / mixed"
-            return "🔴 Difficult"
+        st.markdown(f"### {TEAM_NAMES[team_a]} offense vs. {TEAM_NAMES[team_b]} defense")
+        x1, x2, x3 = st.columns(3)
+        x1.metric("A rushing yards / game", display_num(a["rush_for"]), f"Defense allows {display_num(b['rush_allowed'])}")
+        x2.metric("A passing yards / game", display_num(a["pass_for"]), f"Defense allows {display_num(b['pass_allowed'])}")
+        x3.metric("A points / game", display_num(a["points_for"]), f"Defense allows {display_num(b['points_allowed'])}")
+        st.markdown("#### Simple matchup reference")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Rushing-yard midpoint", display_num(np.nanmean([a["rush_for"], b["rush_allowed"]])))
+        m2.metric("Passing-yard midpoint", display_num(np.nanmean([a["pass_for"], b["pass_allowed"]])))
+        m3.metric("Points midpoint", display_num(np.nanmean([a["points_for"], b["points_allowed"]])))
+        st.caption("Midpoints are simple descriptive benchmarks (average of offense production and opponent allowance), not predictive models or betting advice.")
 
-        def render_team_matchup(offense_code, defense_code):
-            offense = team_summary(offense_code)
-            defense = team_summary(defense_code)
-            # Calculate league benchmarks from team-level game observations.
-            league_rush = safe_mean(team_stats["rushing_yards"])
-            league_pass = safe_mean(team_stats["passing_yards"])
-            league_points = safe_mean(team_stats["points_scored"])
-            specs = [
-                ("Rushing yards", offense["rush_for"], defense["rush_allowed"], league_rush),
-                ("Passing yards", offense["pass_for"], defense["pass_allowed"], league_pass),
-                ("Points scored", offense["points_for"], defense["points_allowed"], league_points),
-            ]
-            rows = []
-            for label, off_avg, def_allow, league_avg in specs:
-                projected = (off_avg + def_allow) / 2 if pd.notna(off_avg) and pd.notna(def_allow) else np.nan
-                grade = team_metric_grade(off_avg, def_allow, league_avg)
-                rows.append({
-                    "Category": label,
-                    "Offense avg/game": display_num(off_avg),
-                    "Defense allows/game": display_num(def_allow),
-                    "League avg/game": display_num(league_avg),
-                    "Projected benchmark": display_num(projected),
-                    "Grade": f"{grade:.1f}/10" if pd.notna(grade) else "N/A",
-                    "Matchup": matchup_label(grade),
-                })
-            st.markdown(f"### {TEAM_NAMES[offense_code]} offense vs. {TEAM_NAMES[defense_code]} defense")
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        render_team_matchup(team_a, team_b)
         st.divider()
-        render_team_matchup(team_b, team_a)
+        st.markdown(f"### {TEAM_NAMES[team_b]} offense vs. {TEAM_NAMES[team_a]} defense")
+        x1, x2, x3 = st.columns(3)
+        x1.metric("B rushing yards / game", display_num(c["rush_for"]), f"Defense allows {display_num(d['rush_allowed'])}")
+        x2.metric("B passing yards / game", display_num(c["pass_for"]), f"Defense allows {display_num(d['pass_allowed'])}")
+        x3.metric("B points / game", display_num(c["points_for"]), f"Defense allows {display_num(d['points_allowed'])}")
+        y1, y2, y3 = st.columns(3)
+        y1.metric("Rushing-yard midpoint", display_num(np.nanmean([c["rush_for"], d["rush_allowed"]])))
+        y2.metric("Passing-yard midpoint", display_num(np.nanmean([c["pass_for"], d["pass_allowed"]])))
+        y3.metric("Points midpoint", display_num(np.nanmean([c["points_for"], d["points_allowed"]])))
 
 # ------------------------------------------------------------
 # TEAM OFFENSE BY POSITION
@@ -515,59 +494,44 @@ with tab_betting:
                     def grade_allowed(allowed_value, league_value):
                         if pd.isna(allowed_value) or pd.isna(league_value) or league_value <= 0:
                             return np.nan
-                        # More forgiving scale: league average = 5; 25% above average = 7.5.
-                        return float(np.clip(5 + 10 * ((allowed_value / league_value) - 1), 1, 10))
+                        # League average = 5.0; allowing 2x league average maps to 10,
+                        # and allowing zero maps to 1. Clamp to a user-friendly 1–10 scale.
+                        return float(np.clip(5 + 5 * ((allowed_value / league_value) - 1), 1, 10))
 
                     def grade_class(score):
                         if pd.isna(score):
                             return "grade-yellow", "N/A"
-                        if score >= 8:
+                        if score >= 7:
                             return "grade-green", "GREEN"
-                        if score >= 5:
+                        if score >= 4.9:
                             return "grade-yellow", "YELLOW"
                         return "grade-red", "RED"
 
-                    POSITION_WEIGHTS = {
+                    # Position-specific weights. RB rushing remains important, but it cannot
+                    # overwhelm two strong receiving subgrades; this avoids counterintuitive
+                    # overall grades when a position has mixed results.
+                    GRADE_WEIGHTS = {
                         "QB": {"Passing yards": 0.85, "Rushing yards": 0.15},
-                        "RB": {"Rushing yards": 0.60, "Receiving yards": 0.25, "Receptions": 0.15},
-                        "WR": {"Receiving yards": 0.75, "Receptions": 0.25},
-                        "TE": {"Receiving yards": 0.75, "Receptions": 0.25},
+                        "RB": {"Rushing yards": 0.40, "Receiving yards": 0.35, "Receptions": 0.25},
+                        "WR": {"Receiving yards": 0.65, "Receptions": 0.35},
+                        "TE": {"Receiving yards": 0.65, "Receptions": 0.35},
                     }
 
-                    def offensive_average(team_code, position, metric_col, n=None):
-                        rows = pos_game_totals[
-                            (pos_game_totals["team"] == team_code) &
-                            (pos_game_totals["position"] == position)
-                        ].copy()
-                        if "game_id" in rows.columns:
-                            rows = rows.drop_duplicates("game_id")
-                        rows = rows.sort_values(sort_cols, ascending=False)
-                        if n is not None:
-                            rows = rows.head(n)
-                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
-
-                    def make_position_grade(offense, defense, position):
+                    def make_position_grade(defense, position):
                         subgrades = []
                         for label, metric_col in GRADE_METRICS[position].items():
                             if metric_col not in pos_game_totals.columns:
                                 continue
-                            offense_avg = offensive_average(offense, position, metric_col, n_games)
                             allowed = defensive_allowed(defense, position, metric_col, n_games)
                             league_avg = league_allowed(position, metric_col, n_games)
-                            # Blend the offense's normal output with what the defense allows.
-                            projected = (offense_avg + allowed) / 2 if pd.notna(offense_avg) and pd.notna(allowed) else np.nan
-                            score = grade_allowed(projected, league_avg)
-                            subgrades.append({
-                                "label": label, "score": score, "allowed": allowed,
-                                "offense": offense_avg, "projected": projected, "league": league_avg
-                            })
-                        weighted = [
-                            (item["score"], POSITION_WEIGHTS[position].get(item["label"], 0))
-                            for item in subgrades if pd.notna(item["score"])
-                        ]
-                        weighted = [(score, weight) for score, weight in weighted if weight > 0]
+                            score = grade_allowed(allowed, league_avg)
+                            subgrades.append({"label": label, "score": score, "allowed": allowed, "league": league_avg})
+                        # Normalize over available metrics so missing data does not count as zero.
+                        weighted = [(item["score"], GRADE_WEIGHTS[position].get(item["label"], 0.0))
+                                    for item in subgrades if pd.notna(item["score"])]
                         weight_total = sum(weight for _, weight in weighted)
-                        overall = (sum(score * weight for score, weight in weighted) / weight_total) if weight_total else np.nan
+                        overall = (sum(score * weight for score, weight in weighted) / weight_total
+                                   if weight_total > 0 else np.nan)
                         return overall, subgrades
 
                     def render_grade_card(team_name, position, overall, subgrades):
@@ -584,7 +548,7 @@ with tab_betting:
                         )
 
                     st.markdown(f"### Week {betting_week} position grades")
-                    st.caption("Green (8.0–10) = favorable matchup · Yellow (5.0–7.9) = average/mixed · Red (1.0–4.9) = difficult matchup. Each subgrade blends the offense's average production with the opponent's allowance, then compares it with the league average. Overall grades use position-specific weights.")
+                    st.caption("Green (7.0–10) = favorable defense to face · Yellow (4.9–6.9) = mixed/near average · Red (1.0–4.8) = difficult defense. A higher grade means the defense has allowed more production in that category than the league average.")
                     for _, game in week_games.iterrows():
                         home_team = str(game["home_team"]).upper()
                         away_team = str(game["away_team"]).upper()
@@ -600,7 +564,7 @@ with tab_betting:
                                 st.markdown(f"**{TEAM_NAMES[offense_team]} offense**")
                                 st.caption(f"Faces {TEAM_NAMES[defense_team]} defense")
                                 for pos in ["QB", "RB", "WR", "TE"]:
-                                    overall, subgrades = make_position_grade(offense_team, defense_team, pos)
+                                    overall, subgrades = make_position_grade(defense_team, pos)
                                     render_grade_card(TEAM_NAMES[offense_team], pos, overall, subgrades)
 
                     # CSV gives one row per team/position, including overall and component grades.
@@ -612,7 +576,7 @@ with tab_betting:
                             continue
                         for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
                             for pos in ["QB", "RB", "WR", "TE"]:
-                                overall, subgrades = make_position_grade(offense_team, defense_team, pos)
+                                overall, subgrades = make_position_grade(defense_team, pos)
                                 row = {"Week": betting_week, "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
                                        "Offensive team": TEAM_NAMES[offense_team], "Position": pos,
                                        "Opponent defense": TEAM_NAMES[defense_team],
