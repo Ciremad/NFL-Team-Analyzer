@@ -402,12 +402,22 @@ with tab_players:
                 st.caption("Recent averages use the latest available player game rows. They are descriptive trends, not guaranteed outcomes.")
 
 # ------------------------------------------------------------
-# BETTING MATCHUP FINDER
+# BETTING MATCHUP FINDER — DEFENSE-BASED POSITION GRADES
 # ------------------------------------------------------------
 with tab_betting:
-    st.markdown('<div class="panel-title">Position matchup finder</div>', unsafe_allow_html=True)
-    st.write("Find potentially favorable QB, RB, WR, and TE statistical matchups for each game by comparing team production with what the opponent allows to that position.")
-    st.caption("Matchup Index is a descriptive comparison, not a probability or a guarantee. 100 is approximately league-average; higher values indicate a more favorable statistical profile.")
+    st.markdown('<div class="panel-title">Position matchup grades</div>', unsafe_allow_html=True)
+    st.write("Each game shows an overall grade for QB, RB, WR, and TE on both teams, plus the subgrades that make up each score.")
+    st.caption("Grades are based on what the opposing defense allows at each position compared with league averages. Overall grade is the simple average of that position's subgrades.")
+    st.markdown("""
+    <style>
+    .grade-card {border:1px solid #2b394a;border-radius:12px;padding:12px;background:linear-gradient(145deg,#171f2b,#10151d);margin-bottom:8px;}
+    .grade-head {display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+    .grade-pos {font-size:1.05rem;font-weight:800;color:#f4f7fb;}
+    .grade-score {font-size:1.5rem;font-weight:900;}
+    .grade-sub {display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid #2b394a;font-size:.88rem;color:#c4ceda;}
+    .grade-green {color:#4ade80;} .grade-yellow {color:#facc15;} .grade-red {color:#fb7185;}
+    </style>
+    """, unsafe_allow_html=True)
 
     if "week" not in schedules.columns:
         st.warning("The schedule data does not include a week field, so weekly matchups cannot be displayed.")
@@ -429,123 +439,145 @@ with tab_betting:
                 future_games = future_games[future_games["_date"].isna() | (future_games["_date"] >= today)]
             upcoming_weeks = sorted(future_games["week"].unique().tolist())
             default_week = upcoming_weeks[0] if upcoming_weeks else available_weeks[-1]
-            week_options = available_weeks
-            week_index = week_options.index(default_week) if default_week in week_options else len(week_options)-1
+            week_index = available_weeks.index(default_week) if default_week in available_weeks else len(available_weeks)-1
             bc1, bc2 = st.columns(2)
             with bc1:
-                betting_week = st.selectbox("NFL week", week_options, index=week_index, key="betting_week")
+                betting_week = st.selectbox("NFL week", available_weeks, index=week_index, key="betting_week")
             with bc2:
-                betting_window = st.selectbox("Stat sample", ["Season", "Last 5 games", "Last 3 games"], key="betting_window")
+                betting_window = st.selectbox("Defensive sample", ["Season", "Last 5 games", "Last 3 games"], key="betting_window")
 
             week_games = schedule_view[schedule_view["week"] == betting_week].copy()
             if week_games.empty:
                 st.info(f"No games found for Week {betting_week}.")
             else:
-                # Build position-level totals per team/game so multiple players at one position
-                # are combined before per-game averages are calculated.
-                metric_cols = sorted({col for spec in POSITION_METRICS.values() for col in spec.values() if col in player_stats.columns})
+                # These are the exact stats used for the matchup grades. TDs are deliberately
+                # excluded from this grading model per the requested subgrade definitions.
+                GRADE_METRICS = {
+                    "QB": {"Passing yards": "passing_yards", "Rushing yards": "rushing_yards"},
+                    "RB": {"Rushing yards": "rushing_yards", "Receiving yards": "receiving_yards", "Receptions": "receptions"},
+                    "WR": {"Receiving yards": "receiving_yards", "Receptions": "receptions"},
+                    "TE": {"Receiving yards": "receiving_yards", "Receptions": "receptions"},
+                }
+                metric_cols = sorted({col for spec in GRADE_METRICS.values() for col in spec.values() if col in player_stats.columns})
                 pos_games = player_stats[player_stats["position"].isin(["QB", "RB", "WR", "TE"])].copy()
                 group_cols = [c for c in ["game_id", "week", "team", "opponent_team", "position"] if c in pos_games.columns]
                 if not group_cols or not metric_cols:
-                    st.warning("The player statistics needed to calculate position matchups are unavailable.")
+                    st.warning("The player statistics needed to calculate position grades are unavailable.")
                 else:
+                    # Aggregate every position's production within a game first. For WR/RB/TE,
+                    # this means a defense is graded against the combined position output per game.
                     pos_game_totals = pos_games.groupby(group_cols, dropna=False)[metric_cols].sum(min_count=1).reset_index()
                     pos_game_totals["week"] = pd.to_numeric(pos_game_totals["week"], errors="coerce")
-                    pos_game_totals = pos_game_totals.sort_values([c for c in ["week", "game_id"] if c in pos_game_totals.columns])
-
-                    def position_metric_value(team_code, position, metric_col, n=None):
-                        rows = pos_game_totals[(pos_game_totals["team"] == team_code) & (pos_game_totals["position"] == position)]
-                        if n is not None:
-                            rows = rows.sort_values([c for c in ["week", "game_id"] if c in rows.columns], ascending=False).head(n)
-                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
-
-                    def allowed_metric_value(def_code, position, metric_col, n=None):
-                        rows = pos_game_totals[(pos_game_totals["opponent_team"] == def_code) & (pos_game_totals["position"] == position)]
-                        if n is not None:
-                            # Keep the most recent defensive games, not just the most recent player rows.
-                            sort_cols = [c for c in ["week", "game_id"] if c in rows.columns]
-                            rows = rows.sort_values(sort_cols, ascending=False).drop_duplicates("game_id").head(n)
-                        else:
-                            rows = rows.drop_duplicates("game_id")
-                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
-
+                    sort_cols = [c for c in ["week", "game_id"] if c in pos_game_totals.columns]
+                    pos_game_totals = pos_game_totals.sort_values(sort_cols)
                     n_games = None if betting_window == "Season" else (5 if betting_window == "Last 5 games" else 3)
-                    matchup_rows = []
+
+                    def defensive_allowed(def_code, position, metric_col, n=None):
+                        rows = pos_game_totals[(pos_game_totals["opponent_team"] == def_code) & (pos_game_totals["position"] == position)].copy()
+                        if "game_id" in rows.columns:
+                            rows = rows.drop_duplicates("game_id")
+                        rows = rows.sort_values(sort_cols, ascending=False)
+                        if n is not None:
+                            rows = rows.head(n)
+                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
+
+                    def league_allowed(position, metric_col, n=None):
+                        rows = pos_game_totals[pos_game_totals["position"] == position].copy()
+                        if "game_id" in rows.columns:
+                            # One observation per defending team/game; each observation is the
+                            # combined production allowed to this position in that game.
+                            rows = rows.drop_duplicates(["opponent_team", "game_id"])
+                        if n is not None:
+                            rows = rows.sort_values(sort_cols, ascending=False).groupby("opponent_team", group_keys=False).head(n)
+                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
+
+                    def grade_allowed(allowed_value, league_value):
+                        if pd.isna(allowed_value) or pd.isna(league_value) or league_value <= 0:
+                            return np.nan
+                        # League average = 5.0; allowing 2x league average maps to 10,
+                        # and allowing zero maps to 1. Clamp to a user-friendly 1–10 scale.
+                        return float(np.clip(5 + 5 * ((allowed_value / league_value) - 1), 1, 10))
+
+                    def grade_class(score):
+                        if pd.isna(score):
+                            return "grade-yellow", "N/A"
+                        if score >= 7:
+                            return "grade-green", "GREEN"
+                        if score >= 4:
+                            return "grade-yellow", "YELLOW"
+                        return "grade-red", "RED"
+
+                    def make_position_grade(defense, position):
+                        subgrades = []
+                        for label, metric_col in GRADE_METRICS[position].items():
+                            if metric_col not in pos_game_totals.columns:
+                                continue
+                            allowed = defensive_allowed(defense, position, metric_col, n_games)
+                            league_avg = league_allowed(position, metric_col, n_games)
+                            score = grade_allowed(allowed, league_avg)
+                            subgrades.append({"label": label, "score": score, "allowed": allowed, "league": league_avg})
+                        available = [item["score"] for item in subgrades if pd.notna(item["score"])]
+                        overall = float(np.mean(available)) if available else np.nan
+                        return overall, subgrades
+
+                    def render_grade_card(team_name, position, overall, subgrades):
+                        css, tag = grade_class(overall)
+                        score_text = f"{overall:.1f}/10" if pd.notna(overall) else "N/A"
+                        rows_html = ""
+                        for item in subgrades:
+                            sub_css, _ = grade_class(item["score"])
+                            sub_score = f"{item['score']:.1f}" if pd.notna(item["score"]) else "N/A"
+                            rows_html += f'<div class="grade-sub"><span>{item["label"]}</span><strong class="{sub_css}">{sub_score}/10</strong></div>'
+                        st.markdown(
+                            f'<div class="grade-card"><div class="grade-head"><span class="grade-pos">{position}</span><span class="grade-score {css}">{score_text}</span></div><div style="font-size:.78rem;color:#9ba8ba;margin-bottom:8px">{team_name} vs. opposing defense · {tag}</div>{rows_html}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown(f"### Week {betting_week} position grades")
+                    st.caption("Green (7.0–10) = favorable defense to face · Yellow (4.0–6.9) = mixed/near average · Red (1.0–3.9) = difficult defense. A higher grade means the defense has allowed more production in that category than the league average.")
                     for _, game in week_games.iterrows():
                         home_team = str(game["home_team"]).upper()
                         away_team = str(game["away_team"]).upper()
                         if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
                             continue
-                        candidates = []
-                        for offense_team, defense_team in [(home_team, away_team), (away_team, home_team)]:
-                            for pos, specs in POSITION_METRICS.items():
-                                ratios = []
-                                production_labels = []
-                                for label, metric_col in specs.items():
-                                    if metric_col not in pos_game_totals.columns:
-                                        continue
-                                    offense_avg = position_metric_value(offense_team, pos, metric_col, n_games)
-                                    defense_allowed = allowed_metric_value(defense_team, pos, metric_col, n_games)
-                                    # Normalize both sides against the league's position-specific per-game average.
-                                    league_rows = pos_game_totals[pos_game_totals["position"] == pos]
-                                    if n_games is not None:
-                                        league_rows = league_rows.sort_values([c for c in ["week", "game_id"] if c in league_rows.columns], ascending=False)
-                                        league_rows = league_rows.drop_duplicates(["team", "game_id"]).groupby("team", group_keys=False).head(n_games)
-                                    league_avg = safe_mean(league_rows[metric_col])
-                                    if pd.notna(offense_avg) and pd.notna(defense_allowed) and pd.notna(league_avg) and league_avg > 0:
-                                        ratios.extend([offense_avg / league_avg, defense_allowed / league_avg])
-                                        production_labels.append((label, offense_avg, defense_allowed, league_avg))
-                                if ratios:
-                                    index_value = float(np.mean(ratios) * 100)
-                                    candidates.append({
-                                        "Offense": offense_team,
-                                        "Defense": defense_team,
-                                        "Position": pos,
-                                        "Matchup Index": index_value,
-                                        "Details": production_labels,
-                                    })
-                        if candidates:
-                            best = max(candidates, key=lambda row: row["Matchup Index"])
-                            matchup_rows.append({
-                                "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
-                                "Best offensive team": TEAM_NAMES[best["Offense"]],
-                                "Position": best["Position"],
-                                "Opponent defense": TEAM_NAMES[best["Defense"]],
-                                "Matchup Index": best["Matchup Index"],
-                                "Game ID": game.get("game_id", ""),
-                                "_details": best["Details"],
-                            })
-                    if not matchup_rows:
-                        st.info("There isn't enough completed player/defensive data to score matchups for this week yet.")
-                    else:
-                        result_table = pd.DataFrame(matchup_rows).sort_values("Matchup Index", ascending=False)
-                        st.markdown(f"### Best position matchup for each Week {betting_week} game")
-                        visible = result_table[["Matchup", "Best offensive team", "Position", "Opponent defense", "Matchup Index"]].copy()
-                        visible["Matchup Index"] = visible["Matchup Index"].map(lambda x: f"{x:.0f}")
-                        st.dataframe(visible, use_container_width=True, hide_index=True)
+                        st.markdown(f"#### {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}")
+                        sides = st.columns(2)
+                        for side_col, offense_team, defense_team in [
+                            (sides[0], away_team, home_team),
+                            (sides[1], home_team, away_team),
+                        ]:
+                            with side_col:
+                                st.markdown(f"**{TEAM_NAMES[offense_team]} offense**")
+                                st.caption(f"Faces {TEAM_NAMES[defense_team]} defense")
+                                for pos in ["QB", "RB", "WR", "TE"]:
+                                    overall, subgrades = make_position_grade(defense_team, pos)
+                                    render_grade_card(TEAM_NAMES[offense_team], pos, overall, subgrades)
 
-                        chosen_matchup = st.selectbox("View matchup details", result_table["Matchup"].tolist(), key="betting_detail_game")
-                        detail_row = result_table[result_table["Matchup"] == chosen_matchup].iloc[0]
-                        st.markdown(f"#### {detail_row['Position']} matchup: {detail_row['Best offensive team']} vs. {detail_row['Opponent defense']}")
-                        detail_df = pd.DataFrame(detail_row["_details"], columns=["Statistic", "Offense average / game", "Defense allows / game", "League average / game"])
-                        st.dataframe(detail_df.style.format({c: "{:.1f}" for c in detail_df.columns if c != "Statistic"}, na_rep="—"), use_container_width=True, hide_index=True)
-                        idx = float(detail_row["Matchup Index"])
-                        if idx >= 115:
-                            st.success(f"Matchup Index {idx:.0f}: notably favorable statistical profile compared with league averages.")
-                        elif idx >= 103:
-                            st.info(f"Matchup Index {idx:.0f}: somewhat favorable statistical profile compared with league averages.")
-                        elif idx <= 90:
-                            st.warning(f"Matchup Index {idx:.0f}: less favorable statistical profile compared with league averages.")
-                        else:
-                            st.caption(f"Matchup Index {idx:.0f}: close to league-average context.")
+                    # CSV gives one row per team/position, including overall and component grades.
+                    export_rows = []
+                    for _, game in week_games.iterrows():
+                        home_team = str(game["home_team"]).upper()
+                        away_team = str(game["away_team"]).upper()
+                        if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
+                            continue
+                        for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
+                            for pos in ["QB", "RB", "WR", "TE"]:
+                                overall, subgrades = make_position_grade(defense_team, pos)
+                                row = {"Week": betting_week, "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
+                                       "Offensive team": TEAM_NAMES[offense_team], "Position": pos,
+                                       "Opponent defense": TEAM_NAMES[defense_team],
+                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None}
+                                for sub in subgrades:
+                                    row[sub["label"] + " grade"] = round(sub["score"], 1) if pd.notna(sub["score"]) else None
+                                    row[sub["label"] + " allowed/game"] = round(sub["allowed"], 1) if pd.notna(sub["allowed"]) else None
+                                export_rows.append(row)
+                    if export_rows:
                         st.download_button(
-                            "Download weekly matchup rankings",
-                            data=visible.to_csv(index=False).encode("utf-8"),
-                            file_name=f"nfl_week_{betting_week}_position_matchups_{season}.csv",
-                            mime="text/csv",
-                            key="download_betting_matchups",
+                            "Download weekly position grades (CSV)",
+                            data=pd.DataFrame(export_rows).to_csv(index=False).encode("utf-8"),
+                            file_name=f"nfl_week_{betting_week}_position_grades_{season}.csv",
+                            mime="text/csv", key="download_betting_matchups",
                         )
-
 # ------------------------------------------------------------
 # 4. DASHBOARD / RANKINGS
 # ------------------------------------------------------------
