@@ -316,14 +316,21 @@ with tab_defense:
 # 3. PLAYER PROP RESEARCH
 # ------------------------------------------------------------
 with tab_players:
-    st.markdown('<div class="panel-title">Player game logs & prop research</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">Offensive skill-player research</div>', unsafe_allow_html=True)
+    st.caption("Only quarterbacks, running backs, wide receivers, and tight ends are included. Defensive players are excluded.")
     pc1, pc2 = st.columns([1, 1])
     with pc1:
         p_team = st.selectbox("Player's team", TEAM_CODES, index=TEAM_CODES.index("CHI"),
                               format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="player_team")
-    team_players = player_stats[player_stats["team"] == p_team].copy()
+    # Player Research is intentionally limited to offensive skill positions.
+    # This keeps defensive players and non-skill roster entries out of the dropdown.
+    skill_positions = ["QB", "RB", "WR", "TE"]
+    team_players = player_stats[
+        (player_stats["team"] == p_team)
+        & (player_stats["position"].isin(skill_positions))
+    ].copy()
     if team_players.empty:
-        st.info(f"No player game data found for {TEAM_NAMES[p_team]} in {season}.")
+        st.info(f"No QB, RB, WR, or TE player statistics found for {TEAM_NAMES[p_team]} in {season}.")
     else:
         name_col = "player_display_name"
         player_names = sorted(team_players[name_col].dropna().astype(str).unique())
