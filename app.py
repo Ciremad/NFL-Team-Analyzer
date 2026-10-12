@@ -121,6 +121,7 @@ for frame in (team_stats, player_stats):
     frame["team"] = frame["team"].astype(str).str.upper()
     frame["opponent_team"] = frame["opponent_team"].astype(str).str.upper()
 
+all_schedules = schedules.copy()  # Preserve upcoming games for the betting matchup finder.
 schedules["home_score"] = pd.to_numeric(schedules["home_score"], errors="coerce")
 schedules["away_score"] = pd.to_numeric(schedules["away_score"], errors="coerce")
 schedules = schedules[schedules["home_score"].notna() & schedules["away_score"].notna()].copy()
@@ -182,9 +183,9 @@ def team_summary(team_code):
         "points_allowed": safe_mean(allowed["points_scored"]),
     }
 
-tab_matchup, tab_offense, tab_defense, tab_players, tab_dashboard = st.tabs([
+tab_matchup, tab_offense, tab_defense, tab_players, tab_betting, tab_dashboard = st.tabs([
     "⚔️ Matchup Analyzer", "📈 Team Offense by Position", "🛡️ Defense vs. Position",
-    "🎯 Player Research", "🏆 Team Rankings"
+    "🎯 Player Research", "💸 Betting Matchups", "🏆 Team Rankings"
 ])
 
 # ------------------------------------------------------------
@@ -399,6 +400,151 @@ with tab_players:
                         st.caption("The selected statistic doesn't have a directly comparable team-level defensive allowance metric in this dataset.")
 
                 st.caption("Recent averages use the latest available player game rows. They are descriptive trends, not guaranteed outcomes.")
+
+# ------------------------------------------------------------
+# BETTING MATCHUP FINDER
+# ------------------------------------------------------------
+with tab_betting:
+    st.markdown('<div class="panel-title">Position matchup finder</div>', unsafe_allow_html=True)
+    st.write("Find potentially favorable QB, RB, WR, and TE statistical matchups for each game by comparing team production with what the opponent allows to that position.")
+    st.caption("Matchup Index is a descriptive comparison, not a probability or a guarantee. 100 is approximately league-average; higher values indicate a more favorable statistical profile.")
+
+    if "week" not in schedules.columns:
+        st.warning("The schedule data does not include a week field, so weekly matchups cannot be displayed.")
+    else:
+        schedule_view = all_schedules.copy()
+        schedule_view["week"] = pd.to_numeric(schedule_view["week"], errors="coerce")
+        schedule_view = schedule_view.dropna(subset=["week", "home_team", "away_team"]).copy()
+        schedule_view["week"] = schedule_view["week"].astype(int)
+        if "game_id" in schedule_view.columns:
+            schedule_view = schedule_view.drop_duplicates(subset=["game_id"])
+        available_weeks = sorted(schedule_view["week"].unique().tolist())
+        if not available_weeks:
+            st.info("No scheduled games are available for this season.")
+        else:
+            today = pd.Timestamp.today().normalize()
+            future_games = schedule_view.copy()
+            if "gameday" in future_games.columns:
+                future_games["_date"] = pd.to_datetime(future_games["gameday"], errors="coerce")
+                future_games = future_games[future_games["_date"].isna() | (future_games["_date"] >= today)]
+            upcoming_weeks = sorted(future_games["week"].unique().tolist())
+            default_week = upcoming_weeks[0] if upcoming_weeks else available_weeks[-1]
+            week_options = available_weeks
+            week_index = week_options.index(default_week) if default_week in week_options else len(week_options)-1
+            bc1, bc2 = st.columns(2)
+            with bc1:
+                betting_week = st.selectbox("NFL week", week_options, index=week_index, key="betting_week")
+            with bc2:
+                betting_window = st.selectbox("Stat sample", ["Season", "Last 5 games", "Last 3 games"], key="betting_window")
+
+            week_games = schedule_view[schedule_view["week"] == betting_week].copy()
+            if week_games.empty:
+                st.info(f"No games found for Week {betting_week}.")
+            else:
+                # Build position-level totals per team/game so multiple players at one position
+                # are combined before per-game averages are calculated.
+                metric_cols = sorted({col for spec in POSITION_METRICS.values() for col in spec.values() if col in player_stats.columns})
+                pos_games = player_stats[player_stats["position"].isin(["QB", "RB", "WR", "TE"])].copy()
+                group_cols = [c for c in ["game_id", "week", "team", "opponent_team", "position"] if c in pos_games.columns]
+                if not group_cols or not metric_cols:
+                    st.warning("The player statistics needed to calculate position matchups are unavailable.")
+                else:
+                    pos_game_totals = pos_games.groupby(group_cols, dropna=False)[metric_cols].sum(min_count=1).reset_index()
+                    pos_game_totals["week"] = pd.to_numeric(pos_game_totals["week"], errors="coerce")
+                    pos_game_totals = pos_game_totals.sort_values([c for c in ["week", "game_id"] if c in pos_game_totals.columns])
+
+                    def position_metric_value(team_code, position, metric_col, n=None):
+                        rows = pos_game_totals[(pos_game_totals["team"] == team_code) & (pos_game_totals["position"] == position)]
+                        if n is not None:
+                            rows = rows.sort_values([c for c in ["week", "game_id"] if c in rows.columns], ascending=False).head(n)
+                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
+
+                    def allowed_metric_value(def_code, position, metric_col, n=None):
+                        rows = pos_game_totals[(pos_game_totals["opponent_team"] == def_code) & (pos_game_totals["position"] == position)]
+                        if n is not None:
+                            # Keep the most recent defensive games, not just the most recent player rows.
+                            sort_cols = [c for c in ["week", "game_id"] if c in rows.columns]
+                            rows = rows.sort_values(sort_cols, ascending=False).drop_duplicates("game_id").head(n)
+                        else:
+                            rows = rows.drop_duplicates("game_id")
+                        return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
+
+                    n_games = None if betting_window == "Season" else (5 if betting_window == "Last 5 games" else 3)
+                    matchup_rows = []
+                    for _, game in week_games.iterrows():
+                        home_team = str(game["home_team"]).upper()
+                        away_team = str(game["away_team"]).upper()
+                        if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
+                            continue
+                        candidates = []
+                        for offense_team, defense_team in [(home_team, away_team), (away_team, home_team)]:
+                            for pos, specs in POSITION_METRICS.items():
+                                ratios = []
+                                production_labels = []
+                                for label, metric_col in specs.items():
+                                    if metric_col not in pos_game_totals.columns:
+                                        continue
+                                    offense_avg = position_metric_value(offense_team, pos, metric_col, n_games)
+                                    defense_allowed = allowed_metric_value(defense_team, pos, metric_col, n_games)
+                                    # Normalize both sides against the league's position-specific per-game average.
+                                    league_rows = pos_game_totals[pos_game_totals["position"] == pos]
+                                    if n_games is not None:
+                                        league_rows = league_rows.sort_values([c for c in ["week", "game_id"] if c in league_rows.columns], ascending=False)
+                                        league_rows = league_rows.drop_duplicates(["team", "game_id"]).groupby("team", group_keys=False).head(n_games)
+                                    league_avg = safe_mean(league_rows[metric_col])
+                                    if pd.notna(offense_avg) and pd.notna(defense_allowed) and pd.notna(league_avg) and league_avg > 0:
+                                        ratios.extend([offense_avg / league_avg, defense_allowed / league_avg])
+                                        production_labels.append((label, offense_avg, defense_allowed, league_avg))
+                                if ratios:
+                                    index_value = float(np.mean(ratios) * 100)
+                                    candidates.append({
+                                        "Offense": offense_team,
+                                        "Defense": defense_team,
+                                        "Position": pos,
+                                        "Matchup Index": index_value,
+                                        "Details": production_labels,
+                                    })
+                        if candidates:
+                            best = max(candidates, key=lambda row: row["Matchup Index"])
+                            matchup_rows.append({
+                                "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
+                                "Best offensive team": TEAM_NAMES[best["Offense"]],
+                                "Position": best["Position"],
+                                "Opponent defense": TEAM_NAMES[best["Defense"]],
+                                "Matchup Index": best["Matchup Index"],
+                                "Game ID": game.get("game_id", ""),
+                                "_details": best["Details"],
+                            })
+                    if not matchup_rows:
+                        st.info("There isn't enough completed player/defensive data to score matchups for this week yet.")
+                    else:
+                        result_table = pd.DataFrame(matchup_rows).sort_values("Matchup Index", ascending=False)
+                        st.markdown(f"### Best position matchup for each Week {betting_week} game")
+                        visible = result_table[["Matchup", "Best offensive team", "Position", "Opponent defense", "Matchup Index"]].copy()
+                        visible["Matchup Index"] = visible["Matchup Index"].map(lambda x: f"{x:.0f}")
+                        st.dataframe(visible, use_container_width=True, hide_index=True)
+
+                        chosen_matchup = st.selectbox("View matchup details", result_table["Matchup"].tolist(), key="betting_detail_game")
+                        detail_row = result_table[result_table["Matchup"] == chosen_matchup].iloc[0]
+                        st.markdown(f"#### {detail_row['Position']} matchup: {detail_row['Best offensive team']} vs. {detail_row['Opponent defense']}")
+                        detail_df = pd.DataFrame(detail_row["_details"], columns=["Statistic", "Offense average / game", "Defense allows / game", "League average / game"])
+                        st.dataframe(detail_df.style.format({c: "{:.1f}" for c in detail_df.columns if c != "Statistic"}, na_rep="—"), use_container_width=True, hide_index=True)
+                        idx = float(detail_row["Matchup Index"])
+                        if idx >= 115:
+                            st.success(f"Matchup Index {idx:.0f}: notably favorable statistical profile compared with league averages.")
+                        elif idx >= 103:
+                            st.info(f"Matchup Index {idx:.0f}: somewhat favorable statistical profile compared with league averages.")
+                        elif idx <= 90:
+                            st.warning(f"Matchup Index {idx:.0f}: less favorable statistical profile compared with league averages.")
+                        else:
+                            st.caption(f"Matchup Index {idx:.0f}: close to league-average context.")
+                        st.download_button(
+                            "Download weekly matchup rankings",
+                            data=visible.to_csv(index=False).encode("utf-8"),
+                            file_name=f"nfl_week_{betting_week}_position_matchups_{season}.csv",
+                            mime="text/csv",
+                            key="download_betting_matchups",
+                        )
 
 # ------------------------------------------------------------
 # 4. DASHBOARD / RANKINGS
