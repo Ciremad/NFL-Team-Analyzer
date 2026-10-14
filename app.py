@@ -422,7 +422,7 @@ with tab_players:
 with tab_betting:
     st.markdown('<div class="panel-title">Position matchup grades</div>', unsafe_allow_html=True)
     st.write("Compact game cards show QB, RB, WR, and TE grades for both offenses; expand a game to inspect the underlying statistics.")
-    st.caption("Grades compare projected position production with league averages. Overall grades use position-specific weighted subgrades.")
+    st.caption("Letter grades make matchups easy to scan. A/A+ = blue, B = green, C = yellow, D = orange, F = red. Expand a game for the supporting stats.")
     st.markdown("""
     <style>
     .grade-card {border:1px solid #2b394a;border-radius:12px;padding:12px;background:linear-gradient(145deg,#171f2b,#10151d);margin-bottom:8px;}
@@ -430,7 +430,7 @@ with tab_betting:
     .grade-pos {font-size:1.05rem;font-weight:800;color:#f4f7fb;}
     .grade-score {font-size:1.5rem;font-weight:900;}
     .grade-sub {display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid #2b394a;font-size:.88rem;color:#c4ceda;}
-    .grade-green {color:#4ade80;} .grade-yellow {color:#facc15;} .grade-red {color:#fb7185;}
+    .grade-blue {color:#60a5fa;} .grade-green {color:#4ade80;} .grade-yellow {color:#facc15;} .grade-orange {color:#fb923c;} .grade-red {color:#fb7185;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -514,14 +514,35 @@ with tab_betting:
                             rows = rows.drop_duplicates("game_id" if "game_id" in rows.columns else sort_cols).head(n)
                         return safe_mean(rows[metric_col]) if metric_col in rows.columns else np.nan
 
-                    def grade_class(score):
+                    def letter_grade(score):
+                        """Translate the existing internal 1–10 score to a simple letter grade."""
                         if pd.isna(score):
-                            return "grade-yellow", "N/A"
-                        if score >= 7:
-                            return "grade-green", "GREEN"
+                            return "N/A"
+                        if score >= 9.5:
+                            return "A+"
+                        if score >= 8.5:
+                            return "A"
+                        if score >= 7.0:
+                            return "B"
                         if score >= 4.9:
-                            return "grade-yellow", "YELLOW"
-                        return "grade-red", "RED"
+                            return "C"
+                        if score >= 3.0:
+                            return "D"
+                        return "F"
+
+                    def grade_class(score):
+                        grade = letter_grade(score)
+                        if grade in {"A+", "A"}:
+                            return "grade-blue", grade
+                        if grade == "B":
+                            return "grade-green", grade
+                        if grade == "C":
+                            return "grade-yellow", grade
+                        if grade == "D":
+                            return "grade-orange", grade
+                        if grade == "F":
+                            return "grade-red", grade
+                        return "grade-yellow", "N/A"
 
                     # Position-specific weights. RB rushing remains important, but it cannot
                     # overwhelm two strong receiving subgrades; this avoids counterintuitive
@@ -555,7 +576,7 @@ with tab_betting:
 
                     def render_grade_card(team_name, position, overall, subgrades):
                         css, tag = grade_class(overall)
-                        score_text = f"{overall:.1f}/10" if pd.notna(overall) else "N/A"
+                        score_text = letter_grade(overall)
                         rows_html = ""
                         for item in subgrades:
                             sub_css, _ = grade_class(item["score"])
@@ -567,11 +588,11 @@ with tab_betting:
                         )
 
                     st.markdown(f"### Week {betting_week} matchups")
-                    st.caption("Grades compare projected position production with league averages. Green = favorable (7.0–10), yellow = mixed (4.9–6.9), red = difficult (below 4.9). TDs are displayed nowhere in the grade calculation.")
+                    st.caption("Grades compare projected position production with league averages. A+/A = elite or excellent (blue); B = favorable (green); C = average/mixed (yellow); D = difficult (orange); F = toughest (red). Numeric calculations remain behind the scenes. TDs are excluded from grading.")
                     filter_col, sort_col = st.columns([1, 1])
                     with filter_col:
                         matchup_filter = st.selectbox(
-                            "Show matchups", ["All matchups", "At least one green grade", "Best matchups (average 7+)", "Only matchups with a red grade"],
+                            "Show matchups", ["All matchups", "At least one B-or-better grade", "Best matchups (average B-or-better)", "Only matchups with a D/F grade"],
                             key="betting_matchup_filter")
                     with sort_col:
                         sort_matchups = st.checkbox("Sort by strongest matchup first", value=True, key="betting_sort_matchups")
@@ -595,7 +616,8 @@ with tab_betting:
                                 row = {"Week": betting_week, "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
                                        "Offensive team": TEAM_NAMES[offense_team], "Position": pos,
                                        "Opponent defense": TEAM_NAMES[defense_team],
-                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None}
+                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None,
+                                       "Letter grade": letter_grade(overall)}
                                 for sub in subgrades:
                                     row[sub["label"] + " grade"] = round(sub["score"], 1) if pd.notna(sub["score"]) else None
                                     row[sub["label"] + " offense avg/game"] = round(sub["offense"], 1) if pd.notna(sub["offense"]) else None
@@ -607,11 +629,11 @@ with tab_betting:
                         average_grade = float(np.mean(grades_for_game)) if grades_for_game else np.nan
                         has_green = any(g >= 7 for g in grades_for_game)
                         has_red = any(g < 4.9 for g in grades_for_game)
-                        if matchup_filter == "At least one green grade" and not has_green:
+                        if matchup_filter == "At least one B-or-better grade" and not has_green:
                             continue
-                        if matchup_filter == "Best matchups (average 7+)" and (pd.isna(average_grade) or average_grade < 7):
+                        if matchup_filter == "Best matchups (average B-or-better)" and (pd.isna(average_grade) or average_grade < 7):
                             continue
-                        if matchup_filter == "Only matchups with a red grade" and not has_red:
+                        if matchup_filter == "Only matchups with a D/F grade" and not has_red:
                             continue
                             # Rank all eight team/position combinations in this game and spotlight
                         # the three strongest. These are the model's best relative matchups,
@@ -638,9 +660,8 @@ with tab_betting:
                     st.caption(f"Showing {len(matchup_cards)} of {len(week_games)} games · Defensive sample: {betting_window}")
 
                     def score_badge(score):
-                        css, _ = grade_class(score)
-                        value = f"{score:.1f}" if pd.notna(score) else "—"
-                        return f'<span class="{css}" style="font-weight:900;font-size:1.05rem">{value}</span>'
+                        css, grade = grade_class(score)
+                        return f'<span class="{css}" style="font-weight:900;font-size:1.05rem">{grade}</span>'
 
                     if not matchup_cards:
                         st.info("No matchups match that filter. Try All matchups or change the defensive sample.")
@@ -660,7 +681,7 @@ with tab_betting:
                                             f"<div style='font-size:.72rem;color:#d5ff3f;font-weight:800'>#{rank} BEST MATCHUP</div>"
                                             f"<div style='font-size:1rem;font-weight:800;margin:.35rem 0'>{TEAM_NAMES[pick['offense']]} {pick['position']}</div>"
                                             f"<div style='font-size:.76rem;color:#9ba8ba'>vs. {TEAM_NAMES[pick['defense']]}</div>"
-                                            f"<div class='{css}' style='font-size:1.55rem;font-weight:900;margin-top:.35rem'>{pick['score']:.1f}/10</div>"
+                                            f"<div class='{css}' style='font-size:1.55rem;font-weight:900;margin-top:.35rem'>{letter_grade(pick['score'])}</div>"
                                             f"<div style='font-size:.68rem;color:#9ba8ba'>{tag}</div></div>",
                                             unsafe_allow_html=True,
                                         )
@@ -668,9 +689,9 @@ with tab_betting:
                                         if valid_metrics:
                                             best_metric = max(valid_metrics, key=lambda item: item["score"])
                                             weakest_metric = min(valid_metrics, key=lambda item: item["score"])
-                                            st.caption(f"**Best component:** {best_metric['label']} · {best_metric['score']:.1f}/10")
+                                            st.caption(f"**Best component:** {best_metric['label']} · {letter_grade(best_metric['score'])}")
                                             if len(valid_metrics) > 1:
-                                                st.caption(f"**Weakest component:** {weakest_metric['label']} · {weakest_metric['score']:.1f}/10")
+                                                st.caption(f"**Weakest component:** {weakest_metric['label']} · {letter_grade(weakest_metric['score'])}")
 
                                             # Explain the grade with the actual model inputs, not a betting promise.
                                             reference = next((item for item in valid_metrics if item is best_metric), valid_metrics[0])
@@ -743,8 +764,8 @@ with tab_betting:
                                     with col:
                                         score = side["positions"][pos]["overall"]
                                         css, tag = grade_class(score)
-                                        score_text = f"{score:.1f}" if pd.notna(score) else "—"
-                                        st.markdown(f"<div class='grade-card' style='padding:9px;text-align:center;margin-bottom:8px'><div style='font-size:.8rem;color:#a8b6c9'>{pos}</div><div class='{css}' style='font-size:1.45rem;font-weight:900'>{score_text}</div><div style='font-size:.65rem;color:#9ba8ba'>{tag}</div></div>", unsafe_allow_html=True)
+                                        score_text = letter_grade(score)
+                                        st.markdown(f"<div class='grade-card' style='padding:9px;text-align:center;margin-bottom:8px'><div style='font-size:.8rem;color:#a8b6c9'>{pos}</div><div class='{css}' style='font-size:1.45rem;font-weight:900'>{score_text}</div></div>", unsafe_allow_html=True)
                                 with st.expander(f"View {TEAM_NAMES[offense_team]} subgrades & stats", expanded=False):
                                     detail_rows = []
                                     for pos in ["QB", "RB", "WR", "TE"]:
@@ -775,7 +796,8 @@ with tab_betting:
                                 row = {"Week": betting_week, "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
                                        "Offensive team": TEAM_NAMES[offense_team], "Position": pos,
                                        "Opponent defense": TEAM_NAMES[defense_team],
-                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None}
+                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None,
+                                       "Letter grade": letter_grade(overall)}
                                 for sub in subgrades:
                                     row[sub["label"] + " grade"] = round(sub["score"], 1) if pd.notna(sub["score"]) else None
                                     row[sub["label"] + " allowed/game"] = round(sub["allowed"], 1) if pd.notna(sub["allowed"]) else None
