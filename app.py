@@ -695,8 +695,25 @@ with tab_betting:
                             continue
                         if matchup_filter == "Only matchups with a red grade" and not has_red:
                             continue
-                        matchup_cards.append({"away": away_team, "home": home_team, "sides": game_sides,
-                                              "average": average_grade, "has_green": has_green, "has_red": has_red})
+                        # Rank all eight team/position combinations in this game and spotlight
+                    # the three strongest. These are the model's best relative matchups,
+                    # not guarantees of player performance.
+                    ranked_positions = []
+                    for side in game_sides:
+                        for pos in ["QB", "RB", "WR", "TE"]:
+                            result = side["positions"][pos]
+                            score = result["overall"]
+                            if pd.notna(score):
+                                ranked_positions.append({
+                                    "offense": side["offense"], "defense": side["defense"],
+                                    "position": pos, "score": float(score),
+                                    "subgrades": result["subgrades"]
+                                })
+                    ranked_positions.sort(key=lambda item: item["score"], reverse=True)
+                    top_three = ranked_positions[:3]
+                    matchup_cards.append({"away": away_team, "home": home_team, "sides": game_sides,
+                                          "average": average_grade, "has_green": has_green, "has_red": has_red,
+                                          "top_three": top_three})
 
                     if sort_matchups:
                         matchup_cards.sort(key=lambda x: (pd.isna(x["average"]), -(x["average"] if pd.notna(x["average"]) else -1)))
@@ -713,6 +730,28 @@ with tab_betting:
                         away_team, home_team = card["away"], card["home"]
                         avg_label = f" · avg {card['average']:.1f}" if pd.notna(card["average"]) else ""
                         with st.expander(f"🏈 {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}{avg_label}", expanded=False):
+                            st.markdown("#### 🎯 Top 3 positional matchups")
+                            st.caption("Ranked by overall position grade across both offenses. These are the strongest model grades in this game, not betting guarantees.")
+                            if card["top_three"]:
+                                top_cols = st.columns(3)
+                                for rank, (col, pick) in enumerate(zip(top_cols, card["top_three"]), start=1):
+                                    with col:
+                                        css, tag = grade_class(pick["score"])
+                                        st.markdown(
+                                            f"<div class='grade-card' style='padding:12px;min-height:150px'>"
+                                            f"<div style='font-size:.72rem;color:#d5ff3f;font-weight:800'>#{rank} BEST MATCHUP</div>"
+                                            f"<div style='font-size:1rem;font-weight:800;margin:.35rem 0'>{TEAM_NAMES[pick['offense']]} {pick['position']}</div>"
+                                            f"<div style='font-size:.76rem;color:#9ba8ba'>vs. {TEAM_NAMES[pick['defense']]}</div>"
+                                            f"<div class='{css}' style='font-size:1.55rem;font-weight:900;margin-top:.35rem'>{pick['score']:.1f}/10</div>"
+                                            f"<div style='font-size:.68rem;color:#9ba8ba'>{tag}</div></div>",
+                                            unsafe_allow_html=True,
+                                        )
+                                        best_metric = max(pick["subgrades"], key=lambda item: item["score"] if pd.notna(item["score"]) else -1, default=None)
+                                        if best_metric and pd.notna(best_metric["score"]):
+                                            st.caption(f"Strongest stat: {best_metric['label']} ({best_metric['score']:.1f})")
+                            else:
+                                st.info("Not enough data to rank positional matchups for this game.")
+                            st.markdown("---")
                             for side in card["sides"]:
                                 offense_team, defense_team = side["offense"], side["defense"]
                                 st.markdown(f"**{TEAM_NAMES[offense_team]} offense** <span class='small-muted'>vs. {TEAM_NAMES[defense_team]} defense</span>", unsafe_allow_html=True)
@@ -746,6 +785,7 @@ with tab_betting:
                         away_team = str(game["away_team"]).upper()
                         if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
                             continue
+                        game_export = []
                         for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
                             for pos in ["QB", "RB", "WR", "TE"]:
                                 overall, subgrades = make_position_grade(offense_team, defense_team, pos)
@@ -756,7 +796,15 @@ with tab_betting:
                                 for sub in subgrades:
                                     row[sub["label"] + " grade"] = round(sub["score"], 1) if pd.notna(sub["score"]) else None
                                     row[sub["label"] + " allowed/game"] = round(sub["allowed"], 1) if pd.notna(sub["allowed"]) else None
-                                export_rows.append(row)
+                                game_export.append(row)
+                        ranked_export = sorted(
+                            [r for r in game_export if pd.notna(r.get("Overall grade"))],
+                            key=lambda r: r["Overall grade"], reverse=True
+                        )
+                        top_keys = {(r["Offensive team"], r["Position"]) for r in ranked_export[:3]}
+                        for row in game_export:
+                            row["Top 3 in game"] = (row["Offensive team"], row["Position"]) in top_keys
+                            export_rows.append(row)
                     if export_rows:
                         st.download_button(
                             "Download weekly position grades (CSV)",
