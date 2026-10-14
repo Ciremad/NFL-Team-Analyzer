@@ -503,8 +503,8 @@ with tab_players:
 # ------------------------------------------------------------
 with tab_betting:
     st.markdown('<div class="panel-title">Position matchup grades</div>', unsafe_allow_html=True)
-    st.write("Each game shows an overall grade for QB, RB, WR, and TE on both teams, plus the subgrades that make up each score.")
-    st.caption("Grades are based on what the opposing defense allows at each position compared with league averages. Overall grade is the simple average of that position's subgrades.")
+    st.write("Compact game cards show QB, RB, WR, and TE grades for both offenses; expand a game to inspect the underlying statistics.")
+    st.caption("Grades compare projected position production with league averages. Overall grades use position-specific weighted subgrades.")
     st.markdown("""
     <style>
     .grade-card {border:1px solid #2b394a;border-radius:12px;padding:12px;background:linear-gradient(145deg,#171f2b,#10151d);margin-bottom:8px;}
@@ -648,25 +648,96 @@ with tab_betting:
                             unsafe_allow_html=True,
                         )
 
-                    st.markdown(f"### Week {betting_week} position grades")
-                    st.caption("Green (7.0–10) = favorable defense to face · Yellow (4.9–6.9) = mixed/near average · Red (1.0–4.8) = difficult defense. A higher grade means the defense has allowed more production in that category than the league average.")
+                    st.markdown(f"### Week {betting_week} matchups")
+                    st.caption("Grades compare projected position production with league averages. Green = favorable (7.0–10), yellow = mixed (4.9–6.9), red = difficult (below 4.9). TDs are displayed nowhere in the grade calculation.")
+                    filter_col, sort_col = st.columns([1, 1])
+                    with filter_col:
+                        matchup_filter = st.selectbox(
+                            "Show matchups", ["All matchups", "At least one green grade", "Best matchups (average 7+)", "Only matchups with a red grade"],
+                            key="betting_matchup_filter")
+                    with sort_col:
+                        sort_matchups = st.checkbox("Sort by strongest matchup first", value=True, key="betting_sort_matchups")
+
+                    matchup_cards = []
+                    export_rows = []
                     for _, game in week_games.iterrows():
                         home_team = str(game["home_team"]).upper()
                         away_team = str(game["away_team"]).upper()
                         if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
                             continue
-                        st.markdown(f"#### {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}")
-                        sides = st.columns(2)
-                        for side_col, offense_team, defense_team in [
-                            (sides[0], away_team, home_team),
-                            (sides[1], home_team, away_team),
-                        ]:
-                            with side_col:
-                                st.markdown(f"**{TEAM_NAMES[offense_team]} offense**")
-                                st.caption(f"Faces {TEAM_NAMES[defense_team]} defense")
-                                for pos in ["QB", "RB", "WR", "TE"]:
-                                    overall, subgrades = make_position_grade(offense_team, defense_team, pos)
-                                    render_grade_card(TEAM_NAMES[offense_team], pos, overall, subgrades)
+                        game_sides = []
+                        grades_for_game = []
+                        for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
+                            position_results = {}
+                            for pos in ["QB", "RB", "WR", "TE"]:
+                                overall, subgrades = make_position_grade(offense_team, defense_team, pos)
+                                position_results[pos] = {"overall": overall, "subgrades": subgrades}
+                                if pd.notna(overall):
+                                    grades_for_game.append(float(overall))
+                                row = {"Week": betting_week, "Matchup": f"{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}",
+                                       "Offensive team": TEAM_NAMES[offense_team], "Position": pos,
+                                       "Opponent defense": TEAM_NAMES[defense_team],
+                                       "Overall grade": round(overall, 1) if pd.notna(overall) else None}
+                                for sub in subgrades:
+                                    row[sub["label"] + " grade"] = round(sub["score"], 1) if pd.notna(sub["score"]) else None
+                                    row[sub["label"] + " offense avg/game"] = round(sub["offense"], 1) if pd.notna(sub["offense"]) else None
+                                    row[sub["label"] + " allowed/game"] = round(sub["allowed"], 1) if pd.notna(sub["allowed"]) else None
+                                    row[sub["label"] + " projected/game"] = round(sub["projected"], 1) if pd.notna(sub["projected"]) else None
+                                    row[sub["label"] + " league avg/game"] = round(sub["league"], 1) if pd.notna(sub["league"]) else None
+                                export_rows.append(row)
+                            game_sides.append({"offense": offense_team, "defense": defense_team, "positions": position_results})
+                        average_grade = float(np.mean(grades_for_game)) if grades_for_game else np.nan
+                        has_green = any(g >= 7 for g in grades_for_game)
+                        has_red = any(g < 4.9 for g in grades_for_game)
+                        if matchup_filter == "At least one green grade" and not has_green:
+                            continue
+                        if matchup_filter == "Best matchups (average 7+)" and (pd.isna(average_grade) or average_grade < 7):
+                            continue
+                        if matchup_filter == "Only matchups with a red grade" and not has_red:
+                            continue
+                        matchup_cards.append({"away": away_team, "home": home_team, "sides": game_sides,
+                                              "average": average_grade, "has_green": has_green, "has_red": has_red})
+
+                    if sort_matchups:
+                        matchup_cards.sort(key=lambda x: (pd.isna(x["average"]), -(x["average"] if pd.notna(x["average"]) else -1)))
+                    st.caption(f"Showing {len(matchup_cards)} of {len(week_games)} games · Defensive sample: {betting_window}")
+
+                    def score_badge(score):
+                        css, _ = grade_class(score)
+                        value = f"{score:.1f}" if pd.notna(score) else "—"
+                        return f'<span class="{css}" style="font-weight:900;font-size:1.05rem">{value}</span>'
+
+                    if not matchup_cards:
+                        st.info("No matchups match that filter. Try All matchups or change the defensive sample.")
+                    for card in matchup_cards:
+                        away_team, home_team = card["away"], card["home"]
+                        avg_label = f" · avg {card['average']:.1f}" if pd.notna(card["average"]) else ""
+                        with st.expander(f"🏈 {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}{avg_label}", expanded=False):
+                            for side in card["sides"]:
+                                offense_team, defense_team = side["offense"], side["defense"]
+                                st.markdown(f"**{TEAM_NAMES[offense_team]} offense** <span class='small-muted'>vs. {TEAM_NAMES[defense_team]} defense</span>", unsafe_allow_html=True)
+                                grade_cols = st.columns(4)
+                                for col, pos in zip(grade_cols, ["QB", "RB", "WR", "TE"]):
+                                    with col:
+                                        score = side["positions"][pos]["overall"]
+                                        css, tag = grade_class(score)
+                                        score_text = f"{score:.1f}" if pd.notna(score) else "—"
+                                        st.markdown(f"<div class='grade-card' style='padding:9px;text-align:center;margin-bottom:8px'><div style='font-size:.8rem;color:#a8b6c9'>{pos}</div><div class='{css}' style='font-size:1.45rem;font-weight:900'>{score_text}</div><div style='font-size:.65rem;color:#9ba8ba'>{tag}</div></div>", unsafe_allow_html=True)
+                                with st.expander(f"View {TEAM_NAMES[offense_team]} subgrades & stats", expanded=False):
+                                    detail_rows = []
+                                    for pos in ["QB", "RB", "WR", "TE"]:
+                                        for item in side["positions"][pos]["subgrades"]:
+                                            detail_rows.append({
+                                                "Position": pos, "Metric": item["label"],
+                                                "Grade": f"{item['score']:.1f}" if pd.notna(item["score"]) else "—",
+                                                "Offense avg/game": display_num(item["offense"]),
+                                                "Defense allows/game": display_num(item["allowed"]),
+                                                "Projected/game": display_num(item["projected"]),
+                                                "League avg/game": display_num(item["league"]),
+                                            })
+                                    if detail_rows:
+                                        st.dataframe(pd.DataFrame(detail_rows), hide_index=True, use_container_width=True)
+                            st.caption("Grades are descriptive matchup indicators, not predictions or guarantees. Smaller samples can be volatile.")
 
                     # CSV gives one row per team/position, including overall and component grades.
                     export_rows = []
