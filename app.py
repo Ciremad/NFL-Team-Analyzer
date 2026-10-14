@@ -205,9 +205,8 @@ def team_summary(team_code):
         "points_allowed": safe_mean(allowed["points_scored"]),
     }
 
-tab_matchup, tab_offense, tab_defense, tab_players, tab_betting, tab_dashboard = st.tabs([
-    "⚔️ Matchup Analyzer", "📈 Team Offense by Position", "🛡️ Defense vs. Position",
-    "🎯 Player Research", "💸 Betting Matchups", "🏆 Team Rankings"
+tab_matchup, tab_players, tab_betting, tab_dashboard = st.tabs([
+    "⚔️ Matchup Analyzer", "🎯 Player Research", "💸 Betting Matchups", "🏆 Team Rankings"
 ])
 
 # ------------------------------------------------------------
@@ -285,87 +284,6 @@ with tab_matchup:
         render_team_matchup(team_a, team_b)
         st.divider()
         render_team_matchup(team_b, team_a)
-
-# ------------------------------------------------------------
-# TEAM OFFENSE BY POSITION
-# ------------------------------------------------------------
-with tab_offense:
-    st.markdown('<div class="panel-title">Team production by position</div>', unsafe_allow_html=True)
-    oc1, oc2, oc3 = st.columns(3)
-    with oc1:
-        off_team = st.selectbox("Offensive team", TEAM_CODES, index=TEAM_CODES.index("CHI"),
-                                format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="position_off_team")
-    with oc2:
-        off_pos = st.selectbox("Position", ["QB", "RB", "WR", "TE"], key="position_off_pos")
-    with oc3:
-        off_window = st.selectbox("Recent sample", [3, 5, 10], index=1,
-                                  format_func=lambda n: f"Last {n} team games", key="position_off_window")
-    metrics = POSITION_METRICS[off_pos]
-    off_rows = player_stats[(player_stats["team"] == off_team) & (player_stats["position"] == off_pos)].copy()
-    if off_rows.empty:
-        st.info(f"No {off_pos} player statistics found for {TEAM_NAMES[off_team]} in {season}.")
-    else:
-        # Sum players at a position within each team game, then average across games.
-        agg_cols = [c for c in metrics.values() if c in off_rows.columns]
-        game_group_cols = [c for c in ["game_id", "week", "opponent_team"] if c in off_rows.columns]
-        game_totals = off_rows.groupby(game_group_cols, dropna=False)[agg_cols].sum(min_count=1).reset_index()
-        game_totals = game_totals.sort_values([c for c in ["week", "game_id"] if c in game_totals.columns], ascending=False)
-        recent_totals = game_totals.head(off_window)
-        st.markdown(f"### {TEAM_NAMES[off_team]} — {off_pos}")
-        st.caption("Team totals include all players at the selected position in each game.")
-        cards = st.columns(len(metrics))
-        for card, (label, col) in zip(cards, metrics.items()):
-            if col in game_totals.columns:
-                card.metric(f"Season {label} / game", display_num(safe_mean(game_totals[col])))
-                card.caption(f"Last {len(recent_totals)}: {display_num(safe_mean(recent_totals[col]))}")
-        st.markdown("#### Position production by game")
-        rename = {"week": "Week", "opponent_team": "Opponent"}
-        rename.update({col: label for label, col in metrics.items() if col in game_totals.columns})
-        show_cols = [c for c in ["week", "opponent_team"] + agg_cols if c in game_totals.columns]
-        display_game_totals = game_totals[show_cols].rename(columns=rename)
-        st.dataframe(display_game_totals, use_container_width=True, hide_index=True)
-        st.download_button("Download position game log", display_game_totals.to_csv(index=False).encode("utf-8"),
-                           file_name=f"{off_team}_{off_pos}_{season}_position_stats.csv", mime="text/csv", key="download_off_position")
-
-# ------------------------------------------------------------
-# DEFENSE VS. POSITION
-# ------------------------------------------------------------
-with tab_defense:
-    st.markdown('<div class="panel-title">Opponent production allowed by position</div>', unsafe_allow_html=True)
-    dc1, dc2, dc3 = st.columns(3)
-    with dc1:
-        def_team = st.selectbox("Defense", TEAM_CODES, index=TEAM_CODES.index("CHI"),
-                                format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="position_def_team")
-    with dc2:
-        def_pos = st.selectbox("Opposing position", ["QB", "RB", "WR", "TE"], key="position_def_pos")
-    with dc3:
-        def_window = st.selectbox("Recent sample", [3, 5, 10], index=1,
-                                  format_func=lambda n: f"Last {n} defensive games", key="position_def_window")
-    metrics = POSITION_METRICS[def_pos]
-    allowed_players = player_stats[(player_stats["opponent_team"] == def_team) & (player_stats["position"] == def_pos)].copy()
-    if allowed_players.empty:
-        st.info(f"No opposing {def_pos} statistics found against {TEAM_NAMES[def_team]} in {season}.")
-    else:
-        agg_cols = [c for c in metrics.values() if c in allowed_players.columns]
-        game_group_cols = [c for c in ["game_id", "week", "team"] if c in allowed_players.columns]
-        game_totals = allowed_players.groupby(game_group_cols, dropna=False)[agg_cols].sum(min_count=1).reset_index()
-        game_totals = game_totals.sort_values([c for c in ["week", "game_id"] if c in game_totals.columns], ascending=False)
-        recent_totals = game_totals.head(def_window)
-        st.markdown(f"### {TEAM_NAMES[def_team]} defense vs. {def_pos}")
-        st.caption("Allowed totals combine all opposing players at the selected position within each game before averaging.")
-        cards = st.columns(len(metrics))
-        for card, (label, col) in zip(cards, metrics.items()):
-            if col in game_totals.columns:
-                card.metric(f"{label} allowed / game", display_num(safe_mean(game_totals[col])))
-                card.caption(f"Last {len(recent_totals)}: {display_num(safe_mean(recent_totals[col]))}")
-        st.markdown("#### Position production allowed by game")
-        rename = {"week": "Week", "team": "Opponent"}
-        rename.update({col: f"{label} allowed" for label, col in metrics.items() if col in game_totals.columns})
-        show_cols = [c for c in ["week", "team"] + agg_cols if c in game_totals.columns]
-        display_game_totals = game_totals[show_cols].rename(columns=rename)
-        st.dataframe(display_game_totals, use_container_width=True, hide_index=True)
-        st.download_button("Download defensive position log", display_game_totals.to_csv(index=False).encode("utf-8"),
-                           file_name=f"{def_team}_vs_{def_pos}_{season}_allowed.csv", mime="text/csv", key="download_def_position")
 
 # ------------------------------------------------------------
 # 3. PLAYER PROP RESEARCH
@@ -877,6 +795,81 @@ with tab_betting:
                             file_name=f"nfl_week_{betting_week}_position_grades_{season}.csv",
                             mime="text/csv", key="download_betting_matchups",
                         )
+    with st.expander("📈 Team Offense by Position", expanded=False):
+        st.markdown('<div class="panel-title">Team production by position</div>', unsafe_allow_html=True)
+        oc1, oc2, oc3 = st.columns(3)
+        with oc1:
+            off_team = st.selectbox("Offensive team", TEAM_CODES, index=TEAM_CODES.index("CHI"),
+                                    format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="position_off_team")
+        with oc2:
+            off_pos = st.selectbox("Position", ["QB", "RB", "WR", "TE"], key="position_off_pos")
+        with oc3:
+            off_window = st.selectbox("Recent sample", [3, 5, 10], index=1,
+                                      format_func=lambda n: f"Last {n} team games", key="position_off_window")
+        metrics = POSITION_METRICS[off_pos]
+        off_rows = player_stats[(player_stats["team"] == off_team) & (player_stats["position"] == off_pos)].copy()
+        if off_rows.empty:
+            st.info(f"No {off_pos} player statistics found for {TEAM_NAMES[off_team]} in {season}.")
+        else:
+            # Sum players at a position within each team game, then average across games.
+            agg_cols = [c for c in metrics.values() if c in off_rows.columns]
+            game_group_cols = [c for c in ["game_id", "week", "opponent_team"] if c in off_rows.columns]
+            game_totals = off_rows.groupby(game_group_cols, dropna=False)[agg_cols].sum(min_count=1).reset_index()
+            game_totals = game_totals.sort_values([c for c in ["week", "game_id"] if c in game_totals.columns], ascending=False)
+            recent_totals = game_totals.head(off_window)
+            st.markdown(f"### {TEAM_NAMES[off_team]} — {off_pos}")
+            st.caption("Team totals include all players at the selected position in each game.")
+            cards = st.columns(len(metrics))
+            for card, (label, col) in zip(cards, metrics.items()):
+                if col in game_totals.columns:
+                    card.metric(f"Season {label} / game", display_num(safe_mean(game_totals[col])))
+                    card.caption(f"Last {len(recent_totals)}: {display_num(safe_mean(recent_totals[col]))}")
+            st.markdown("#### Position production by game")
+            rename = {"week": "Week", "opponent_team": "Opponent"}
+            rename.update({col: label for label, col in metrics.items() if col in game_totals.columns})
+            show_cols = [c for c in ["week", "opponent_team"] + agg_cols if c in game_totals.columns]
+            display_game_totals = game_totals[show_cols].rename(columns=rename)
+            st.dataframe(display_game_totals, use_container_width=True, hide_index=True)
+            st.download_button("Download position game log", display_game_totals.to_csv(index=False).encode("utf-8"),
+                               file_name=f"{off_team}_{off_pos}_{season}_position_stats.csv", mime="text/csv", key="download_off_position")
+
+    with st.expander("🛡️ Defense vs. Position", expanded=False):
+        st.markdown('<div class="panel-title">Opponent production allowed by position</div>', unsafe_allow_html=True)
+        dc1, dc2, dc3 = st.columns(3)
+        with dc1:
+            def_team = st.selectbox("Defense", TEAM_CODES, index=TEAM_CODES.index("CHI"),
+                                    format_func=lambda x: f"{TEAM_NAMES[x]} ({x})", key="position_def_team")
+        with dc2:
+            def_pos = st.selectbox("Opposing position", ["QB", "RB", "WR", "TE"], key="position_def_pos")
+        with dc3:
+            def_window = st.selectbox("Recent sample", [3, 5, 10], index=1,
+                                      format_func=lambda n: f"Last {n} defensive games", key="position_def_window")
+        metrics = POSITION_METRICS[def_pos]
+        allowed_players = player_stats[(player_stats["opponent_team"] == def_team) & (player_stats["position"] == def_pos)].copy()
+        if allowed_players.empty:
+            st.info(f"No opposing {def_pos} statistics found against {TEAM_NAMES[def_team]} in {season}.")
+        else:
+            agg_cols = [c for c in metrics.values() if c in allowed_players.columns]
+            game_group_cols = [c for c in ["game_id", "week", "team"] if c in allowed_players.columns]
+            game_totals = allowed_players.groupby(game_group_cols, dropna=False)[agg_cols].sum(min_count=1).reset_index()
+            game_totals = game_totals.sort_values([c for c in ["week", "game_id"] if c in game_totals.columns], ascending=False)
+            recent_totals = game_totals.head(def_window)
+            st.markdown(f"### {TEAM_NAMES[def_team]} defense vs. {def_pos}")
+            st.caption("Allowed totals combine all opposing players at the selected position within each game before averaging.")
+            cards = st.columns(len(metrics))
+            for card, (label, col) in zip(cards, metrics.items()):
+                if col in game_totals.columns:
+                    card.metric(f"{label} allowed / game", display_num(safe_mean(game_totals[col])))
+                    card.caption(f"Last {len(recent_totals)}: {display_num(safe_mean(recent_totals[col]))}")
+            st.markdown("#### Position production allowed by game")
+            rename = {"week": "Week", "team": "Opponent"}
+            rename.update({col: f"{label} allowed" for label, col in metrics.items() if col in game_totals.columns})
+            show_cols = [c for c in ["week", "team"] + agg_cols if c in game_totals.columns]
+            display_game_totals = game_totals[show_cols].rename(columns=rename)
+            st.dataframe(display_game_totals, use_container_width=True, hide_index=True)
+            st.download_button("Download defensive position log", display_game_totals.to_csv(index=False).encode("utf-8"),
+                               file_name=f"{def_team}_vs_{def_pos}_{season}_allowed.csv", mime="text/csv", key="download_def_position")
+
 # ------------------------------------------------------------
 # 4. DASHBOARD / RANKINGS
 # ------------------------------------------------------------
