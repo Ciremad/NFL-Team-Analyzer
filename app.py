@@ -731,7 +731,7 @@ with tab_betting:
                         avg_label = f" · avg {card['average']:.1f}" if pd.notna(card["average"]) else ""
                         with st.expander(f"🏈 {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}{avg_label}", expanded=False):
                             st.markdown("#### 🎯 Top 3 positional matchups")
-                            st.caption("Ranked by overall position grade across both offenses. These are the strongest model grades in this game, not betting guarantees.")
+                            st.caption("Ranked by overall position grade across both offenses. Each card explains its strongest/weakest stat, projected production versus the league baseline, and the inputs behind the projection. Rankings are descriptive, not betting guarantees.")
                             if card["top_three"]:
                                 top_cols = st.columns(3)
                                 for rank, (col, pick) in enumerate(zip(top_cols, card["top_three"]), start=1):
@@ -746,9 +746,32 @@ with tab_betting:
                                             f"<div style='font-size:.68rem;color:#9ba8ba'>{tag}</div></div>",
                                             unsafe_allow_html=True,
                                         )
-                                        best_metric = max(pick["subgrades"], key=lambda item: item["score"] if pd.notna(item["score"]) else -1, default=None)
-                                        if best_metric and pd.notna(best_metric["score"]):
-                                            st.caption(f"Strongest stat: {best_metric['label']} ({best_metric['score']:.1f})")
+                                        valid_metrics = [item for item in pick["subgrades"] if pd.notna(item["score"])]
+                                        if valid_metrics:
+                                            best_metric = max(valid_metrics, key=lambda item: item["score"])
+                                            weakest_metric = min(valid_metrics, key=lambda item: item["score"])
+                                            st.caption(f"**Best component:** {best_metric['label']} · {best_metric['score']:.1f}/10")
+                                            if len(valid_metrics) > 1:
+                                                st.caption(f"**Weakest component:** {weakest_metric['label']} · {weakest_metric['score']:.1f}/10")
+
+                                            # Explain the grade with the actual model inputs, not a betting promise.
+                                            reference = next((item for item in valid_metrics if item is best_metric), valid_metrics[0])
+                                            if pd.notna(reference["projected"]) and pd.notna(reference["league"]) and reference["league"] > 0:
+                                                delta_pct = (reference["projected"] / reference["league"] - 1) * 100
+                                                direction = "above" if delta_pct >= 0 else "below"
+                                                st.caption(f"**{reference['label']} projection:** {reference['projected']:.1f}/game vs. league avg {reference['league']:.1f} ({abs(delta_pct):.0f}% {direction}).")
+                                            if pd.notna(reference["offense"]) and pd.notna(reference["allowed"]):
+                                                st.caption(f"Offense averages {reference['offense']:.1f}/game; opponent allows {reference['allowed']:.1f}/game.")
+
+                                            if pick["score"] >= 8.5:
+                                                takeaway = "Strong statistical matchup relative to the league baseline."
+                                            elif pick["score"] >= 7:
+                                                takeaway = "Favorable on the model's production baseline; check player usage and availability."
+                                            elif pick["score"] >= 4.9:
+                                                takeaway = "Mixed profile—look at the component grades to see what drives the score."
+                                            else:
+                                                takeaway = "Below-average statistical setup despite ranking among this game's top available grades."
+                                            st.markdown(f"<div style='font-size:.78rem;color:#d5dce7;margin-top:.35rem'>{takeaway}</div>", unsafe_allow_html=True)
                             else:
                                 st.info("Not enough data to rank positional matchups for this game.")
                             st.markdown("---")
