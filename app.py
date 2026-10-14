@@ -695,25 +695,25 @@ with tab_betting:
                             continue
                         if matchup_filter == "Only matchups with a red grade" and not has_red:
                             continue
-                        # Rank all eight team/position combinations in this game and spotlight
-                    # the three strongest. These are the model's best relative matchups,
-                    # not guarantees of player performance.
-                    ranked_positions = []
-                    for side in game_sides:
-                        for pos in ["QB", "RB", "WR", "TE"]:
-                            result = side["positions"][pos]
-                            score = result["overall"]
-                            if pd.notna(score):
-                                ranked_positions.append({
-                                    "offense": side["offense"], "defense": side["defense"],
-                                    "position": pos, "score": float(score),
-                                    "subgrades": result["subgrades"]
-                                })
-                    ranked_positions.sort(key=lambda item: item["score"], reverse=True)
-                    top_three = ranked_positions[:3]
-                    matchup_cards.append({"away": away_team, "home": home_team, "sides": game_sides,
-                                          "average": average_grade, "has_green": has_green, "has_red": has_red,
-                                          "top_three": top_three})
+                            # Rank all eight team/position combinations in this game and spotlight
+                        # the three strongest. These are the model's best relative matchups,
+                        # not guarantees of player performance.
+                        ranked_positions = []
+                        for side in game_sides:
+                            for pos in ["QB", "RB", "WR", "TE"]:
+                                result = side["positions"][pos]
+                                score = result["overall"]
+                                if pd.notna(score):
+                                    ranked_positions.append({
+                                        "offense": side["offense"], "defense": side["defense"],
+                                        "position": pos, "score": float(score),
+                                        "subgrades": result["subgrades"]
+                                    })
+                        ranked_positions.sort(key=lambda item: item["score"], reverse=True)
+                        top_three = ranked_positions[:3]
+                        matchup_cards.append({"away": away_team, "home": home_team, "sides": game_sides,
+                                              "average": average_grade, "has_green": has_green, "has_red": has_red,
+                                              "top_three": top_three})
 
                     if sort_matchups:
                         matchup_cards.sort(key=lambda x: (pd.isna(x["average"]), -(x["average"] if pd.notna(x["average"]) else -1)))
