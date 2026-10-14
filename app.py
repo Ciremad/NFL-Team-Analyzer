@@ -43,6 +43,16 @@ h1 { font-weight: 800; }
 }
 [data-testid="stMetricLabel"] { color: #a8b6c9; }
 [data-testid="stMetricValue"] { color: #f4f7fb; }
+[data-testid="stDataFrame"] { border: 1px solid #2b394a; border-radius: 10px; }
+[data-testid="stExpander"] { border: 1px solid #2b394a; border-radius: 10px; background: #10151d; }
+@media (max-width: 700px) {
+  .block-container { padding-left: .7rem; padding-right: .7rem; padding-top: .7rem; }
+  h1 { font-size: 1.65rem !important; }
+  h2 { font-size: 1.25rem !important; }
+  [data-testid="stMetric"] { padding: 8px 10px; }
+  [data-testid="stMetricLabel"] { font-size: .75rem; }
+  [data-testid="stMetricValue"] { font-size: 1.25rem; }
+}
 div.stButton > button[kind="primary"] {
   background: #d5ff3f; color: #10140a; border: 0; font-weight: 800;
 }
@@ -142,9 +152,14 @@ if team_stats.empty:
 team_stats = team_stats.drop_duplicates(subset=["game_id", "team"])
 player_stats = player_stats[player_stats["game_id"].isin(set(team_stats["game_id"]))].copy()
 player_stats["week"] = pd.to_numeric(player_stats["week"], errors="coerce")
+NUMERIC_PLAYER_STATS = {
+    "passing_yards", "rushing_yards", "receiving_yards", "receptions", "passing_tds",
+    "rushing_tds", "receiving_tds", "attempts", "passing_attempts", "passing_completions",
+    "completions", "carries", "targets", "air_yards", "target_share", "fantasy_points",
+    "rushing_fumbles", "receiving_fumbles"
+}
 for c in player_stats.columns:
-    if c in {"passing_yards", "rushing_yards", "receiving_yards", "receptions", "passing_tds",
-             "rushing_tds", "receiving_tds", "attempts", "carries", "targets", "completions"}:
+    if c in NUMERIC_PLAYER_STATS:
         player_stats[c] = pd.to_numeric(player_stats[c], errors="coerce")
 
 
@@ -154,6 +169,13 @@ POSITION_METRICS = {
     "RB": {"Rushing yards": "rushing_yards", "Receiving yards": "receiving_yards", "Receptions": "receptions", "Total TDs": "total_tds"},
     "WR": {"Receiving yards": "receiving_yards", "Receptions": "receptions", "Receiving TDs": "receiving_tds"},
     "TE": {"Receiving yards": "receiving_yards", "Receptions": "receptions", "Receiving TDs": "receiving_tds"},
+}
+# Optional opportunity stats; use only columns actually provided by the current data source.
+OPPORTUNITY_METRICS = {
+    "QB": {"Pass attempts": ["attempts", "passing_attempts"], "Completions": ["completions", "passing_completions"], "Rushing attempts": ["carries"]},
+    "RB": {"Carries": ["carries"], "Targets": ["targets"], "Receptions": ["receptions"]},
+    "WR": {"Targets": ["targets"], "Receptions": ["receptions"], "Air yards": ["air_yards"]},
+    "TE": {"Targets": ["targets"], "Receptions": ["receptions"], "Air yards": ["air_yards"]},
 }
 
 # Standardize TD fields and identify completed games available in the loaded data.
@@ -391,11 +413,54 @@ with tab_players:
                 recent = selected.head(window)
                 recent_avg = safe_mean(recent[metric_col])
                 latest = selected.iloc[0]
+                season_count = int(pd.to_numeric(selected[metric_col], errors="coerce").notna().sum())
+                trend_delta = ((recent_avg - season_avg) / abs(season_avg) * 100) if pd.notna(season_avg) and season_avg != 0 and pd.notna(recent_avg) else np.nan
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Season average", display_num(season_avg))
-                k2.metric(f"Last {len(recent)} games", display_num(recent_avg))
+                k1.metric("Season average", display_num(season_avg), f"{season_count} game rows")
+                k2.metric(f"Last {len(recent)} games", display_num(recent_avg),
+                          (f"{trend_delta:+.1f}% vs season" if pd.notna(trend_delta) else None))
                 k3.metric("Latest game", display_num(pd.to_numeric(pd.Series([latest.get(metric_col)]), errors="coerce").iloc[0]))
                 k4.metric("Position", pos)
+
+                with st.expander("📏 Compare with a sportsbook line", expanded=False):
+                    line_col, direction_col = st.columns([1, 1])
+                    with line_col:
+                        prop_line = st.number_input("Enter prop line", min_value=0.0, value=0.0, step=0.5,
+                                                    key=f"line_{p_team}_{chosen_player}_{metric_col}")
+                    with direction_col:
+                        line_direction = st.selectbox("Evaluate", ["Over", "Under"],
+                                                      key=f"direction_{p_team}_{chosen_player}_{metric_col}")
+                    valid_games = pd.to_numeric(selected[metric_col], errors="coerce").dropna()
+                    recent_valid = pd.to_numeric(recent[metric_col], errors="coerce").dropna()
+                    if prop_line > 0 and len(valid_games):
+                        if line_direction == "Over":
+                            season_hits = int((valid_games > prop_line).sum())
+                            recent_hits = int((recent_valid > prop_line).sum())
+                        else:
+                            season_hits = int((valid_games < prop_line).sum())
+                            recent_hits = int((recent_valid < prop_line).sum())
+                        l1, l2, l3 = st.columns(3)
+                        l1.metric("Season hit rate", f"{season_hits}/{len(valid_games)} ({season_hits / len(valid_games) * 100:.0f}%)")
+                        l2.metric(f"Last {len(recent_valid)} hit rate", f"{recent_hits}/{len(recent_valid)} ({recent_hits / len(recent_valid) * 100:.0f}%)" if len(recent_valid) else "—")
+                        l3.metric("Recent avg vs line", f"{recent_avg - prop_line:+.1f}" if pd.notna(recent_avg) else "—")
+                        st.caption("Pushes are not counted as hits. Historical hit rates are descriptive, not a probability guarantee.")
+                    else:
+                        st.caption("Enter a line above 0 to see historical season and recent hit rates.")
+
+                opportunity_metrics = OPPORTUNITY_METRICS.get(pos, {})
+                opportunity_rows = []
+                for label, candidates in opportunity_metrics.items():
+                    col = next((candidate for candidate in candidates if candidate in selected.columns), None)
+                    if col:
+                        opportunity_rows.append({"Opportunity stat": label, "Season avg": safe_mean(selected[col]),
+                                                 f"Last {len(recent)} avg": safe_mean(recent[col])})
+                if opportunity_rows:
+                    st.markdown("#### Opportunity & usage")
+                    st.dataframe(pd.DataFrame(opportunity_rows).style.format(
+                        {"Season avg": "{:.1f}", f"Last {len(recent)} avg": "{:.1f}"}, na_rep="—"),
+                        use_container_width=True, hide_index=True)
+                    st.caption("Carries, targets and attempts add context about opportunity. These appear only when available in the source data.")
+
                 st.markdown("#### Game log")
                 log_cols = [c for c in ["week", "opponent_team", "position", metric_col] if c in selected.columns]
                 game_log = selected[log_cols].copy().rename(columns={
@@ -439,7 +504,7 @@ with tab_players:
 with tab_betting:
     st.markdown('<div class="panel-title">Position matchup grades</div>', unsafe_allow_html=True)
     st.write("Each game shows an overall grade for QB, RB, WR, and TE on both teams, plus the subgrades that make up each score.")
-    st.caption("Grades are based on what the opposing defense allows at each position compared with league averages. Overall grade uses position-specific weights, with receiving yards prioritized for WR/TE and passing yards prioritized for QBs.")
+    st.caption("Grades are based on what the opposing defense allows at each position compared with league averages. Overall grade is the simple average of that position's subgrades.")
     st.markdown("""
     <style>
     .grade-card {border:1px solid #2b394a;border-radius:12px;padding:12px;background:linear-gradient(145deg,#171f2b,#10151d);margin-bottom:8px;}
@@ -583,76 +648,24 @@ with tab_betting:
                             unsafe_allow_html=True,
                         )
 
-                    st.markdown(f"### Week {betting_week} matchups")
-                    st.caption("Compact view: compare QB/RB/WR/TE grades at a glance. Expand any game for the individual stat grades.")
-                    st.markdown("""
-                    <style>
-                    .mobile-game-card {border:1px solid #2b394a;border-radius:12px;padding:10px 12px;margin:8px 0 5px;background:linear-gradient(145deg,#171f2b,#10151d);}
-                    .mobile-game-title {font-weight:800;font-size:1rem;margin-bottom:9px;color:#f4f7fb;}
-                    .mobile-team-row {display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid #2b394a;}
-                    .mobile-team-name {font-weight:700;min-width:90px;flex:1;color:#e5edf7;font-size:.86rem;}
-                    .mobile-grade-list {display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end;}
-                    .mobile-grade-pill {font-size:.76rem;font-weight:800;border-radius:7px;padding:4px 6px;background:#202a36;white-space:nowrap;}
-                    .grade-green {color:#4ade80;} .grade-yellow {color:#facc15;} .grade-red {color:#fb7185;}
-                    @media (max-width: 600px) {
-                      .mobile-game-card {padding:9px;}
-                      .mobile-team-row {align-items:flex-start;flex-direction:column;gap:5px;}
-                      .mobile-grade-list {justify-content:flex-start;}
-                      .mobile-team-name {font-size:.9rem;}
-                    }
-                    </style>
-                    """, unsafe_allow_html=True)
-
-                    quick_filter = st.radio(
-                        "Show matchups", ["All games", "Games with green grades", "Best matchups"],
-                        horizontal=True, key="betting_quick_filter"
-                    )
-                    matchup_cards = []
+                    st.markdown(f"### Week {betting_week} position grades")
+                    st.caption("Green (7.0–10) = favorable defense to face · Yellow (4.9–6.9) = mixed/near average · Red (1.0–4.8) = difficult defense. A higher grade means the defense has allowed more production in that category than the league average.")
                     for _, game in week_games.iterrows():
                         home_team = str(game["home_team"]).upper()
                         away_team = str(game["away_team"]).upper()
                         if home_team not in TEAM_NAMES or away_team not in TEAM_NAMES:
                             continue
-                        team_grades = {}
-                        for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
-                            team_grades[offense_team] = {
-                                pos: make_position_grade(offense_team, defense_team, pos)
-                                for pos in ["QB", "RB", "WR", "TE"]
-                            }
-                        all_scores = [overall for posmap in team_grades.values() for overall, _ in posmap.values() if pd.notna(overall)]
-                        avg_grade = float(np.mean(all_scores)) if all_scores else np.nan
-                        has_green = any(score >= 7 for score in all_scores)
-                        matchup_cards.append({"home": home_team, "away": away_team, "grades": team_grades,
-                                              "average": avg_grade, "has_green": has_green})
-
-                    if quick_filter == "Games with green grades":
-                        matchup_cards = [card for card in matchup_cards if card["has_green"]]
-                    elif quick_filter == "Best matchups":
-                        matchup_cards = sorted(matchup_cards, key=lambda card: card["average"] if pd.notna(card["average"]) else -1, reverse=True)
-
-                    if not matchup_cards:
-                        st.info("No matchups match this filter. Try All games.")
-
-                    for card in matchup_cards:
-                        home_team, away_team, team_grades = card["home"], card["away"], card["grades"]
-                        position_order = ["QB", "RB", "WR", "TE"]
-                        def pill(score, label):
-                            css, _ = grade_class(score)
-                            val = f"{score:.1f}" if pd.notna(score) else "N/A"
-                            return f'<span class="mobile-grade-pill {css}">{label} {val}</span>'
-                        away_pills = "".join(pill(team_grades[away_team][pos][0], pos) for pos in position_order)
-                        home_pills = "".join(pill(team_grades[home_team][pos][0], pos) for pos in position_order)
-                        st.markdown(
-                            f'<div class="mobile-game-card"><div class="mobile-game-title">{TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}</div>'
-                            f'<div class="mobile-team-row"><span class="mobile-team-name">{TEAM_NAMES[away_team]}</span><div class="mobile-grade-list">{away_pills}</div></div>'
-                            f'<div class="mobile-team-row"><span class="mobile-team-name">{TEAM_NAMES[home_team]}</span><div class="mobile-grade-list">{home_pills}</div></div></div>',
-                            unsafe_allow_html=True,
-                        )
-                        with st.expander(f"View detailed grades · {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}", expanded=False):
-                            for offense_team, defense_team in [(away_team, home_team), (home_team, away_team)]:
-                                st.markdown(f"**{TEAM_NAMES[offense_team]} offense** · Faces {TEAM_NAMES[defense_team]} defense")
-                                for pos in position_order:
-                                    overall, subgrades = team_grades[offense_team][pos]
+                        st.markdown(f"#### {TEAM_NAMES[away_team]} at {TEAM_NAMES[home_team]}")
+                        sides = st.columns(2)
+                        for side_col, offense_team, defense_team in [
+                            (sides[0], away_team, home_team),
+                            (sides[1], home_team, away_team),
+                        ]:
+                            with side_col:
+                                st.markdown(f"**{TEAM_NAMES[offense_team]} offense**")
+                                st.caption(f"Faces {TEAM_NAMES[defense_team]} defense")
+                                for pos in ["QB", "RB", "WR", "TE"]:
+                                    overall, subgrades = make_position_grade(offense_team, defense_team, pos)
                                     render_grade_card(TEAM_NAMES[offense_team], pos, overall, subgrades)
 
                     # CSV gives one row per team/position, including overall and component grades.
