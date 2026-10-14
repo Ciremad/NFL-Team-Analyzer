@@ -772,6 +772,48 @@ with tab_betting:
                                             else:
                                                 takeaway = "Below-average statistical setup despite ranking among this game's top available grades."
                                             st.markdown(f"<div style='font-size:.78rem;color:#d5dce7;margin-top:.35rem'>{takeaway}</div>", unsafe_allow_html=True)
+
+                                            # Add player-level context for the position's strongest component.
+                                            # The team/position grade stays team-based; this section identifies
+                                            # the players whose recent production may be driving that matchup.
+                                            metric_col = GRADE_METRICS.get(pick["position"], {}).get(best_metric["label"])
+                                            player_name_col = "player_display_name" if "player_display_name" in player_stats.columns else ("player_name" if "player_name" in player_stats.columns else None)
+                                            if metric_col and metric_col in player_stats.columns and player_name_col:
+                                                player_rows = player_stats[
+                                                    (player_stats["team"] == pick["offense"])
+                                                    & (player_stats["position"] == pick["position"])
+                                                ].copy()
+                                                if not player_rows.empty:
+                                                    player_rows["week"] = pd.to_numeric(player_rows["week"], errors="coerce")
+                                                    player_rows = player_rows.sort_values([c for c in ["week", "game_id"] if c in player_rows.columns], ascending=False)
+                                                    recent_n = 5 if betting_window == "Season" else (5 if betting_window == "Last 5 games" else 3)
+                                                    player_rows = player_rows.groupby(player_name_col, dropna=True, group_keys=False).head(recent_n)
+                                                    player_rows[metric_col] = pd.to_numeric(player_rows[metric_col], errors="coerce")
+                                                    leaders = (player_rows.groupby(player_name_col)[metric_col]
+                                                               .agg(["mean", "count"]).reset_index()
+                                                               .sort_values("mean", ascending=False).head(2))
+                                                    if not leaders.empty:
+                                                        st.markdown("**Players to research**")
+                                                        for _, leader in leaders.iterrows():
+                                                            player_name = str(leader[player_name_col])
+                                                            # Show available opportunity indicators, never assume missing columns exist.
+                                                            original_rows = player_rows[player_rows[player_name_col].astype(str) == player_name]
+                                                            usage_bits = []
+                                                            usage_candidates = [
+                                                                ("Targets", "targets"), ("Carries", "carries"),
+                                                                ("Receptions", "receptions"), ("Rushing attempts", "rushing_attempts"),
+                                                            ]
+                                                            for usage_label, usage_col in usage_candidates:
+                                                                if usage_col in original_rows.columns:
+                                                                    usage_avg = safe_mean(original_rows[usage_col])
+                                                                    if pd.notna(usage_avg):
+                                                                        usage_bits.append(f"{usage_label.lower()} {usage_avg:.1f}/game")
+                                                            usage_text = " · ".join(usage_bits[:2])
+                                                            st.caption(f"{player_name}: {safe_mean(original_rows[metric_col]):.1f} {best_metric['label'].lower()}/game over last {int(leader['count'])} games" + (f" · {usage_text}" if usage_text else ""))
+                                                    else:
+                                                        st.caption("No player-level recent averages available for this position yet.")
+                                                else:
+                                                    st.caption("No player game logs available for this team and position yet.")
                             else:
                                 st.info("Not enough data to rank positional matchups for this game.")
                             st.markdown("---")
