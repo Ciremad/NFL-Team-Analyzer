@@ -934,15 +934,61 @@ with tab_betting:
             agg_cols = [c for c in metrics.values() if c in allowed_players.columns]
             game_group_cols = [c for c in ["game_id", "week", "team"] if c in allowed_players.columns]
             game_totals = allowed_players.groupby(game_group_cols, dropna=False)[agg_cols].sum(min_count=1).reset_index()
-            game_totals = game_totals.sort_values([c for c in ["week", "game_id"] if c in game_totals.columns], ascending=False)
+            sort_cols = [c for c in ["week", "game_id"] if c in game_totals.columns]
+            game_totals = game_totals.sort_values(sort_cols, ascending=False)
             recent_totals = game_totals.head(def_window)
+
+            # Build comparable per-defense allowed averages over the same sample window.
+            all_allowed = player_stats[player_stats["position"] == def_pos].copy()
+            all_game_totals = all_allowed.groupby(
+                [c for c in ["opponent_team", "game_id", "week", "team"] if c in all_allowed.columns],
+                dropna=False
+            )[agg_cols].sum(min_count=1).reset_index()
+            league_rows = []
+            for code, team_games in all_game_totals.groupby("opponent_team", dropna=True):
+                team_games = team_games.sort_values([c for c in ["week", "game_id"] if c in team_games.columns], ascending=False)
+                sample = team_games.head(def_window)
+                row = {"Team": TEAM_NAMES.get(str(code), str(code)), "Code": str(code), "Games": len(sample)}
+                for label, col in metrics.items():
+                    if col in sample.columns:
+                        row[f"{label} allowed / game"] = safe_mean(sample[col])
+                league_rows.append(row)
+            league_rankings = pd.DataFrame(league_rows)
+            for label, col in metrics.items():
+                value_col = f"{label} allowed / game"
+                if value_col in league_rankings.columns:
+                    # Rank 1 = fewest yards/receptions/TDs allowed (strongest defense).
+                    league_rankings[f"{label} rank"] = league_rankings[value_col].rank(method="min", ascending=True).astype("Int64")
+            selected_row = league_rankings[league_rankings["Code"] == def_team]
+
             st.markdown(f"### {TEAM_NAMES[def_team]} defense vs. {def_pos}")
-            st.caption("Allowed totals combine all opposing players at the selected position within each game before averaging.")
+            st.caption(f"Allowed totals combine all opposing {def_pos} players within each game. Ranks compare the selected defense with all teams over the same {def_window}-game sample; rank 1 means the fewest allowed.")
             cards = st.columns(len(metrics))
             for card, (label, col) in zip(cards, metrics.items()):
                 if col in game_totals.columns:
-                    card.metric(f"{label} allowed / game", display_num(safe_mean(game_totals[col])))
-                    card.caption(f"Last {len(recent_totals)}: {display_num(safe_mean(recent_totals[col]))}")
+                    avg = safe_mean(recent_totals[col])
+                    rank_text = "Rank unavailable"
+                    if not selected_row.empty and f"{label} rank" in selected_row.columns:
+                        rank = selected_row.iloc[0][f"{label} rank"]
+                        rank_text = f"League rank: {int(rank)} of {len(league_rankings)}" if pd.notna(rank) else "Rank unavailable"
+                    card.metric(f"{label} allowed / game", display_num(avg))
+                    card.caption(rank_text)
+                    card.caption(f"Sample avg: {display_num(avg)} over {len(recent_totals)} games")
+
+            with st.expander("📊 League rankings for this position", expanded=True):
+                rank_metric = st.selectbox("Rank defenses by", list(metrics.keys()), key="def_rank_metric")
+                rank_value = f"{rank_metric} allowed / game"
+                rank_col = f"{rank_metric} rank"
+                if rank_value in league_rankings.columns:
+                    ranking_view = league_rankings.sort_values(rank_value, ascending=True, na_position="last").copy()
+                    ranking_view.insert(0, "Rank", ranking_view[rank_col])
+                    ranking_view = ranking_view[["Rank", "Team", "Code", "Games", rank_value]]
+                    ranking_view = ranking_view.rename(columns={rank_value: f"{rank_metric} allowed / game"})
+                    st.dataframe(ranking_view, use_container_width=True, hide_index=True)
+                    st.caption("Lower allowed production ranks better defensively. Rankings use the same recent-game window selected above.")
+                    st.download_button("Download league defensive rankings (CSV)", ranking_view.to_csv(index=False).encode("utf-8"),
+                                       file_name=f"{season}_{def_pos}_{def_window}game_defense_rankings.csv", mime="text/csv", key="download_def_rankings")
+
             st.markdown("#### Position production allowed by game")
             rename = {"week": "Week", "team": "Opponent"}
             rename.update({col: f"{label} allowed" for label, col in metrics.items() if col in game_totals.columns})
