@@ -817,66 +817,66 @@ with tab_betting:
                             file_name=f"nfl_week_{betting_week}_position_grades_{season}.csv",
                             mime="text/csv", key="download_betting_matchups",
                         )
-    with st.expander("🏈 Touchdowns Allowed by Defense", expanded=False):
-        st.markdown('<div class="panel-title">Defensive touchdowns allowed by position</div>', unsafe_allow_html=True)
-        st.caption("Shows touchdowns surrendered per game and total touchdowns in the selected sample. This is a descriptive stat table, separate from the positional matchup grade.")
-
-        td_defense_rows = player_stats[
-            player_stats["position"].isin(["QB", "RB", "WR", "TE"])
-        ].copy()
-        td_metric_map = {
-            "QB passing TDs": ("QB", "passing_tds"),
-            "RB rushing TDs": ("RB", "rushing_tds"),
-            "RB receiving TDs": ("RB", "receiving_tds"),
-            "WR receiving TDs": ("WR", "receiving_tds"),
-            "TE receiving TDs": ("TE", "receiving_tds"),
-        }
-        for _, metric_col in td_metric_map.values():
-            if metric_col not in td_defense_rows.columns:
-                td_defense_rows[metric_col] = 0
-            td_defense_rows[metric_col] = pd.to_numeric(
-                td_defense_rows[metric_col], errors="coerce"
-            ).fillna(0)
-
-        td_game_rows = []
-        for (game_id, week, defense), group in td_defense_rows.groupby(
-            ["game_id", "week", "opponent_team"], dropna=False
-        ):
-            row = {"game_id": game_id, "Week": week, "Defense": defense}
-            for label, (position, metric_col) in td_metric_map.items():
-                row[label] = float(group.loc[group["position"] == position, metric_col].sum())
-            td_game_rows.append(row)
-
-        if not td_game_rows:
-            st.info("No completed player touchdown data is available for this season yet.")
-        else:
-            td_by_game = pd.DataFrame(td_game_rows)
-            td_by_game["Week"] = pd.to_numeric(td_by_game["Week"], errors="coerce")
-            td_by_game = td_by_game.sort_values(["Defense", "Week", "game_id"], ascending=[True, False, False])
-            sample_n = None if betting_window == "Season" else (5 if betting_window == "Last 5 games" else 3)
-            if sample_n is not None:
-                td_by_game = td_by_game.groupby("Defense", group_keys=False).head(sample_n)
-
-            summary_rows = []
-            for defense, group in td_by_game.groupby("Defense"):
-                row = {
-                    "Defense": f"{TEAM_NAMES.get(str(defense), str(defense))} ({defense})",
-                    "Games": int(group["game_id"].nunique()),
-                }
-                for label in td_metric_map:
-                    row[f"{label}/game"] = round(float(group[label].sum() / max(group["game_id"].nunique(), 1)), 2)
-                    row[f"{label} total"] = int(group[label].sum())
-                summary_rows.append(row)
-            td_summary = pd.DataFrame(summary_rows)
-            td_summary = td_summary.sort_values("QB passing TDs/game", ascending=True)
-            st.dataframe(td_summary, hide_index=True, use_container_width=True)
-            st.download_button(
-                "Download defensive touchdowns allowed (CSV)",
-                data=td_summary.to_csv(index=False).encode("utf-8"),
-                file_name=f"nfl_defensive_touchdowns_allowed_{season}_{betting_window.lower().replace(' ', '_')}.csv",
-                mime="text/csv", key="download_defensive_tds",
-            )
-
+        with st.expander("🏈 Touchdowns Allowed by Defense", expanded=False):
+            st.markdown('<div class="panel-title">Defensive touchdowns allowed by position</div>', unsafe_allow_html=True)
+            st.caption("Shows touchdowns surrendered per game and total touchdowns in the selected sample. This is a descriptive stat table, separate from the positional matchup grade.")
+    
+            td_defense_rows = player_stats[
+                player_stats["position"].isin(["QB", "RB", "WR", "TE"])
+            ].copy()
+            td_metric_map = {
+                "QB passing TDs": ("QB", "passing_tds"),
+                "RB rushing TDs": ("RB", "rushing_tds"),
+                "RB receiving TDs": ("RB", "receiving_tds"),
+                "WR receiving TDs": ("WR", "receiving_tds"),
+                "TE receiving TDs": ("TE", "receiving_tds"),
+            }
+            for _, metric_col in td_metric_map.values():
+                if metric_col not in td_defense_rows.columns:
+                    td_defense_rows[metric_col] = 0
+                td_defense_rows[metric_col] = pd.to_numeric(
+                    td_defense_rows[metric_col], errors="coerce"
+                ).fillna(0)
+    
+            td_game_rows = []
+            for (game_id, week, defense), group in td_defense_rows.groupby(
+                ["game_id", "week", "opponent_team"], dropna=False
+            ):
+                row = {"game_id": game_id, "Week": week, "Defense": defense}
+                for label, (position, metric_col) in td_metric_map.items():
+                    row[label] = float(group.loc[group["position"] == position, metric_col].sum())
+                td_game_rows.append(row)
+    
+            if not td_game_rows:
+                st.info("No completed player touchdown data is available for this season yet.")
+            else:
+                td_by_game = pd.DataFrame(td_game_rows)
+                td_by_game["Week"] = pd.to_numeric(td_by_game["Week"], errors="coerce")
+                td_by_game = td_by_game.sort_values(["Defense", "Week", "game_id"], ascending=[True, False, False])
+                sample_n = None if betting_window == "Season" else (5 if betting_window == "Last 5 games" else 3)
+                if sample_n is not None:
+                    td_by_game = td_by_game.groupby("Defense", group_keys=False).head(sample_n)
+    
+                summary_rows = []
+                for defense, group in td_by_game.groupby("Defense"):
+                    row = {
+                        "Defense": f"{TEAM_NAMES.get(str(defense), str(defense))} ({defense})",
+                        "Games": int(group["game_id"].nunique()),
+                    }
+                    for label in td_metric_map:
+                        row[f"{label}/game"] = round(float(group[label].sum() / max(group["game_id"].nunique(), 1)), 2)
+                        row[f"{label} total"] = int(group[label].sum())
+                    summary_rows.append(row)
+                td_summary = pd.DataFrame(summary_rows)
+                td_summary = td_summary.sort_values("QB passing TDs/game", ascending=True)
+                st.dataframe(td_summary, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "Download defensive touchdowns allowed (CSV)",
+                    data=td_summary.to_csv(index=False).encode("utf-8"),
+                    file_name=f"nfl_defensive_touchdowns_allowed_{season}_{betting_window.lower().replace(' ', '_')}.csv",
+                    mime="text/csv", key="download_defensive_tds",
+                )
+    
     with st.expander("📈 Team Offense by Position", expanded=False):
         st.markdown('<div class="panel-title">Team production by position</div>', unsafe_allow_html=True)
         oc1, oc2, oc3 = st.columns(3)
